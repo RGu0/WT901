@@ -15,6 +15,7 @@ from enum import Enum
 from types import TracebackType
 from typing import Self, TypeVar
 
+from wt901.calibration import Calibration
 from wt901.config import RegisterAccess
 from wt901.errors import ConfigurationError, TransportError
 from wt901.models import ImuSample
@@ -164,6 +165,7 @@ class WT901Device:
         self._registers = RegisterAccess(self)
         self._register_listener = self._registers.dispatch
         self._reconnect_hook = self._registers.replay
+        self._calibration = Calibration(self)
 
     # ----- 构造与生命周期 -------------------------------------------------
 
@@ -258,6 +260,15 @@ class WT901Device:
         仍在以旧配置推数据。想测量新配置的效果，得先把它们取干净。
         """
         return self._samples.qsize()
+
+    @property
+    def calibration(self) -> Calibration:
+        """加计校准与磁场校准。
+
+        磁场校准优先用 ``device.calibration.field_calibration()`` 上下文管理器：
+        它保证退出校准态，包括 with 体内抛异常的情况。
+        """
+        return self._calibration
 
     @property
     def registers(self) -> RegisterAccess:
