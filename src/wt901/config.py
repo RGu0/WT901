@@ -1,0 +1,253 @@
+"""寄存器读写事务与输出配置。
+
+读寄存器不是「发了就有」：它是请求/响应事务。发出 ``FF AA 27 <reg> 00`` 后设备
+回一帧 ``0x55 0x71``，其中携带**起始地址起连续 4 个寄存器**的值。这些回帧与
+``0x61`` 实时数据流混在同一条链路上到达，所以必须按地址把响应关联回请求，而不是
+官方示例那样 sleep 一段时间再去翻缓存。
+
+写寄存器是一个有时序的三步操作（解锁 → 写 → 保存），中间的延时不是可选的。本模块
+把它封装成原子操作，调用方不感知时序，也无法把它拆开执行一半。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from wt901.errors import TransportTimeoutError, UnsupportedRegisterError
+from wt901.protocol import commands
+from wt901.protocol.frames import RegisterResponse
+from wt901.protocol.registers import Bandwidth, Register, ReturnRate
+
+if TYPE_CHECKING:
+    from wt901.device import WT901Device
+
+__all__ = [
+    "DEFAULT_READ_TIMEOUT",
+    "DEFAULT_WRITE_DELAY",
+    "RegisterAccess",
+    "Settings",
+]
+
+DEFAULT_READ_TIMEOUT = 0.5
+"""秒。官方实现用 100 ms，自动读暂停时放宽到 700 ms。取中间值并配合重试。"""
+
+DEFAULT_READ_RETRIES = 2
+
+DEFAULT_WRITE_DELAY = 0.1
+"""秒。解锁与写、写与保存之间的间隔，与官方实现一致。"""
+
+
+@dataclass
+class Settings:
+    """一次配置事务里要改的项。``None`` 表示不动。"""
+
+    output_rate: ReturnRate | int | None = None
+    bandwidth: Bandwidth | int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AppliedWrite:
+    register: int
+    value: int
+
+
+def _coerce_return_rate(value: ReturnRate | int) -> ReturnRate:
+    """把取值收敛到已核实的档位，其余一律拒绝。
+
+    器件支持 0.2–200 Hz，但官方资料只演示了两个档位的编码。写入一个未经证实的
+    编码可能让设备进入未知状态，而那种故障在现场表现为「数据不对但连接正常」，
+    极难定位。宁可拒绝。
+    """
+    try:
+        return ReturnRate(value)
+    except ValueError:
+        raise UnsupportedRegisterError(
+            f"回传速率编码 0x{int(value):02X} 未在真机上核实。"
+            f"当前已核实：{', '.join(f'{r.name}=0x{r.value:02X}' for r in ReturnRate)}。"
+            "开放其余档位需先实测确认实际速率。"
+        ) from None
+
+
+def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
+    try:
+        return Bandwidth(value)
+    except ValueError:
+        raise UnsupportedRegisterError(
+            f"带宽编码 0x{int(value):02X} 未在真机上核实。"
+            f"当前已核实：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}。"
+        ) from None
+
+
+class RegisterAccess:
+    """一台设备的寄存器读写通道。
+
+    由 :class:`~wt901.device.WT901Device` 持有，通过 ``device.registers`` 访问。
+    """
+
+    def __init__(
+        self,
+        device: WT901Device,
+        *,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
+        read_retries: int = DEFAULT_READ_RETRIES,
+        write_delay: float = DEFAULT_WRITE_DELAY,
+    ) -> None:
+        self._device = device
+        self.read_timeout = read_timeout
+        self.read_retries = read_retries
+        self.write_delay = write_delay
+
+        # 按起始寄存器地址关联响应。同一地址可能有多个等待者（例如两处并发读
+        # 同一个寄存器），一次响应把它们全部唤醒。
+        self._waiters: dict[int, list[asyncio.Future[RegisterResponse]]] = {}
+
+        # 写事务必须串行。两个写交错会变成 解锁/解锁/写/写/保存/保存 —— 那不是
+        # 「两次写」，而是一次语义不明的操作。
+        self._write_lock = asyncio.Lock()
+
+        self._applied: list[_AppliedWrite] = []
+
+    # ----- 接收 -----------------------------------------------------------
+
+    def dispatch(self, response: RegisterResponse) -> None:
+        """由设备层在收到 ``0x71`` 帧时调用。
+
+        没人等待的地址直接忽略——设备可能在回应别处发出的读，或是上一次超时后
+        迟到的响应。把它们当成错误只会制造噪声。
+        """
+        waiters = self._waiters.pop(response.start_register, None)
+        if not waiters:
+            return
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(response)
+
+    # ----- 读 -------------------------------------------------------------
+
+    async def read(self, register: int) -> RegisterResponse:
+        """读寄存器，返回**该地址起连续 4 个**寄存器的值。
+
+        这不是接口设计的选择，是协议决定的：一次回帧固定携带 4 个寄存器。所以
+        读 ``0x3A`` 一次拿到 HX/HY/HZ，读 ``0x51`` 一次拿到 Q0–Q3。
+        """
+        command = commands.read_register(register)
+        last_error: TransportTimeoutError | None = None
+
+        for _ in range(self.read_retries + 1):
+            loop = asyncio.get_running_loop()
+            waiter: asyncio.Future[RegisterResponse] = loop.create_future()
+            self._waiters.setdefault(register, []).append(waiter)
+            try:
+                await self._device.write(command)
+                return await asyncio.wait_for(waiter, self.read_timeout)
+            except TimeoutError:
+                last_error = TransportTimeoutError(
+                    f"读寄存器 0x{register:02X} 超时（{self.read_timeout}s）"
+                )
+            finally:
+                self._discard_waiter(register, waiter)
+
+        assert last_error is not None
+        raise last_error
+
+    async def read_value(self, register: int) -> int:
+        """读单个寄存器的值。内部仍是一次 4 寄存器的读。"""
+        response = await self.read(register)
+        return response.value_at(register)
+
+    def _discard_waiter(
+        self, register: int, waiter: asyncio.Future[RegisterResponse]
+    ) -> None:
+        pending = self._waiters.get(register)
+        if pending is None:
+            return
+        if waiter in pending:
+            pending.remove(waiter)
+        if not pending:
+            self._waiters.pop(register, None)
+
+    # ----- 写 -------------------------------------------------------------
+
+    async def write(self, register: int, value: int, *, persist: bool = True) -> None:
+        """原子地写一个寄存器：解锁 → 延时 → 写 → 延时 → 保存。
+
+        ``persist=False`` 跳过保存，配置只在本次上电期间有效。重连后的配置重放
+        走这条路径——模块保存过的配置本就还在，没必要为此再写一次 flash。
+        """
+        async with self._write_lock:
+            await self._device.write(commands.unlock())
+            await asyncio.sleep(self.write_delay)
+            await self._device.write(commands.write_register(register, value))
+            await asyncio.sleep(self.write_delay)
+            if persist:
+                await self._device.write(commands.save())
+
+        self._remember(register, value)
+
+    def _remember(self, register: int, value: int) -> None:
+        """记下已下发的配置，供重连后重放。同一寄存器只保留最后一次。"""
+        self._applied = [
+            entry for entry in self._applied if entry.register != register
+        ]
+        self._applied.append(_AppliedWrite(register=register, value=value))
+
+    @property
+    def applied_writes(self) -> tuple[_AppliedWrite, ...]:
+        """本次会话已下发的配置，按下发顺序。"""
+        return tuple(self._applied)
+
+    async def replay(self) -> None:
+        """重连后重放已知配置。
+
+        用 ``persist=False``：这些配置多数已经保存在模块里，重连不会把它们抹掉；
+        重放是为了覆盖「写过但未保存」的那部分运行时状态，不该顺带产生额外的
+        flash 写入。
+        """
+        for entry in tuple(self._applied):
+            await self.write(entry.register, entry.value, persist=False)
+
+    # ----- 具名配置 -------------------------------------------------------
+
+    async def set_output_rate(self, rate: ReturnRate | int) -> ReturnRate:
+        """设置回传速率。出厂默认 10 Hz，采集前必须主动配置。"""
+        resolved = _coerce_return_rate(rate)
+        await self.write(Register.RRATE, resolved)
+        return resolved
+
+    async def set_bandwidth(self, bandwidth: Bandwidth | int) -> Bandwidth:
+        """设置传感器带宽。"""
+        resolved = _coerce_bandwidth(bandwidth)
+        await self.write(Register.BANDWIDTH, resolved)
+        return resolved
+
+    async def read_output_rate(self) -> int:
+        """读回 ``RRATE`` 的原始编码。
+
+        返回原始 int 而非 :class:`ReturnRate`：设备上可能存着一个本库尚未核实的
+        档位（例如上位机软件设过），把它硬塞进枚举会抛异常，而调用方只是想知道
+        设备现在是什么状态。
+        """
+        return await self.read_value(Register.RRATE)
+
+    async def read_bandwidth(self) -> int:
+        """读回 ``BANDWIDTH`` 的原始编码。理由同 :meth:`read_output_rate`。"""
+        return await self.read_value(Register.BANDWIDTH)
+
+    @asynccontextmanager
+    async def settings(self) -> AsyncIterator[Settings]:
+        """批量配置。退出 ``async with`` 时统一下发。
+
+        逐项仍按「解锁 → 写 → 保存」的完整时序执行，**不合并成一次解锁多次写**：
+        那种批量形式没有在官方资料或真机上得到证实，而寄存器写入出错的表现是
+        设备静默进入未知状态。这里选择多花几百毫秒。
+        """
+        pending = Settings()
+        yield pending
+        if pending.output_rate is not None:
+            await self.set_output_rate(pending.output_rate)
+        if pending.bandwidth is not None:
+            await self.set_bandwidth(pending.bandwidth)

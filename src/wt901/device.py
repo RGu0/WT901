@@ -15,6 +15,7 @@ from enum import Enum
 from types import TracebackType
 from typing import Self, TypeVar
 
+from wt901.config import RegisterAccess
 from wt901.errors import ConfigurationError, TransportError
 from wt901.models import ImuSample
 from wt901.protocol.frames import (
@@ -158,6 +159,12 @@ class WT901Device:
         self._register_listener: Callable[[RegisterResponse], None] | None = None
         self._reconnect_hook: Callable[[], Awaitable[None]] | None = None
 
+        # 寄存器通道自带默认接线：0x71 回帧交给它，重连后由它重放配置。
+        # 调用方仍可用 on_register_response() / on_reconnect() 覆盖。
+        self._registers = RegisterAccess(self)
+        self._register_listener = self._registers.dispatch
+        self._reconnect_hook = self._registers.replay
+
     # ----- 构造与生命周期 -------------------------------------------------
 
     @classmethod
@@ -242,6 +249,24 @@ class WT901Device:
     @property
     def output_mode(self) -> OutputMode:
         return self._output_mode
+
+    @property
+    def pending_samples(self) -> int:
+        """队列中尚未被取走的样本数。
+
+        配置变更之后这个数就是「陈数据」的量：写事务本身要花几百毫秒，其间设备
+        仍在以旧配置推数据。想测量新配置的效果，得先把它们取干净。
+        """
+        return self._samples.qsize()
+
+    @property
+    def registers(self) -> RegisterAccess:
+        """寄存器读写通道。
+
+        ``await device.registers.set_output_rate(ReturnRate.HZ_50)``、
+        ``await device.registers.read(Register.HX)`` 等。
+        """
+        return self._registers
 
     @property
     def stats(self) -> DeviceStats:

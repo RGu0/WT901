@@ -122,6 +122,17 @@ async def test_slow_consumer_drops_oldest_and_counts_it() -> None:
     await device.close()
 
 
+async def test_pending_samples_reports_backlog() -> None:
+    """配置变更后队列里积的就是「陈数据」，测量前得知道有多少。"""
+    device, transport = await _opened(queue_size=16)
+    assert device.pending_samples == 0
+    transport.feed(data_frame() * 5)
+    assert device.pending_samples == 5
+    await _take(device, 5)
+    assert device.pending_samples == 0
+    await device.close()
+
+
 async def test_queue_does_not_grow_without_bound() -> None:
     device, transport = await _opened(queue_size=8)
     for _ in range(200):
