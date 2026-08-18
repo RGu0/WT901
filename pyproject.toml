@@ -14,6 +14,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8,<9",
+    # 传输层与设备层的接口本身是 async，异步测试需要它
+    "pytest-asyncio>=0.24,<2",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
 ]
@@ -35,3 +37,6 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 传输层与设备层的公开接口全是 async。逐个打 marker 只会漏掉几个，
+# 而漏掉的那个会「通过」得悄无声息——协程根本没被 await。
+asyncio_mode = "auto"
