@@ -1,0 +1,45 @@
+# 跑的是 ./dev —— 与本地治理入口完全同一组命令。
+# CI 另起一套命令是「本地过了线上挂」最典型的来源，所以这里不写 uv/pytest/ruff
+# 的调用，只调 ./dev；命令定义的唯一权威是仓库里的 dev 脚本与 .ai-project 清单。
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同一分支上新的推送取消旧的运行；main 上不取消，那里的每次运行都是回归记录。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ./dev 在找不到 uv 时以 127 退出，不会静默降级到系统 Python。
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Python 版本只有 .python-version 一个来源。在这里另写一个数字，
+      # 两处迟早漂移，而漂移后的症状是 CI 与本地行为不一致——最难查的一类。
+      - name: Pin Python from .python-version
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Lint (ruff + mypy strict)
+        run: ./dev lint
+
+      - name: Test
+        run: ./dev test
+
+      - name: Build
+        run: ./dev build
