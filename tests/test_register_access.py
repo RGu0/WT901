@@ -188,9 +188,14 @@ async def test_set_output_rate_and_bandwidth() -> None:
     await device.close()
 
 
-@pytest.mark.parametrize("code", [0x00, 0x09, 0x0B, 0xFF])
+@pytest.mark.parametrize("code", [0x00, 0x05, 0x0A, 0x0C, 0xFF])
 async def test_unverified_output_rate_is_refused(code: int) -> None:
-    """未核实的档位必须拒绝，而不是静默写入一个未知编码。"""
+    """未核实的档位必须拒绝，而不是静默写入一个未知编码。
+
+    `0x0A` 特别值得留在这里：通用编码表标它 125 Hz，2026-08-18 实测却是 99.29 Hz
+    （与 `0x09` 几乎相同，且同批探测中 `0x0B` 达到 198 Hz，排除链路带宽不足）。
+    实测与标称不符的档位一律拒绝。
+    """
     device, transport = await _opened()
     with pytest.raises(UnsupportedRegisterError, match="未在真机上核实"):
         await device.registers.set_output_rate(code)

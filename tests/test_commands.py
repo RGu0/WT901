@@ -102,7 +102,17 @@ def test_out_of_range_value_is_rejected(value: int) -> None:
 def test_only_verified_rate_and_bandwidth_values_exist() -> None:
     """未在真机核实的档位不进枚举——写入未知编码可能让设备进入未知状态。
 
-    其余档位的开放见 RAY-171。
+    速率档位于 2026-08-18 在 WT901BLE67 上逐档实测（`tools/probe_rates.py`）。
+    `0x0A` 被有意排除：通用编码表标它 125 Hz，实测却是 99.29 Hz，与 `0x09` 几乎
+    相同；同一次探测里 `0x0B` 跑到 198 Hz，所以不是链路带宽不足。
     """
-    assert {int(rate) for rate in ReturnRate} == {0x06, 0x08}
+    assert {int(rate) for rate in ReturnRate} == {0x06, 0x07, 0x08, 0x09, 0x0B}
+    assert 0x0A not in {int(rate) for rate in ReturnRate}
+    # 带宽尚未逐档探测，仍只开放官方示例演示过的两档。
     assert {int(bandwidth) for bandwidth in Bandwidth} == {0x00, 0x04}
+
+
+def test_verified_rate_commands_match_expected_bytes() -> None:
+    assert set_return_rate(ReturnRate.HZ_20) == bytes.fromhex("ffaa030700")
+    assert set_return_rate(ReturnRate.HZ_100) == bytes.fromhex("ffaa030900")
+    assert set_return_rate(ReturnRate.HZ_200) == bytes.fromhex("ffaa030b00")
