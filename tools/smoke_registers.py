@@ -27,6 +27,9 @@ from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 
 MEASURE_SECONDS = 10.0
 
+LONG_RUN_RATE = ReturnRate.HZ_100
+"""长跑用 100 Hz。链路压力是 50 Hz 的两倍，低速率不丢包说明不了高速率也不丢。"""
+
 
 async def measure_rate(device: WT901Device, seconds: float) -> tuple[float, int]:
     """排空积压后测速率，返回 ``(Hz, 排空的积压样本数)``。
@@ -99,20 +102,35 @@ async def main() -> int:
             print("  （起始就已是 20 Hz，这一项不构成写入证明）")
 
         # --- 长时间稳定性（RAY-170） ---
+        #
+        # 跑在 100 Hz 而不是 50 Hz：链路压力翻倍，正是 dropped_samples 与
+        # resync_count 最该暴露问题的地方。低速率下不丢包说明不了高速率也不丢。
         if minutes > 0:
-            print(f"\n开始长时间采集 {minutes} 分钟 ...")
+            await device.registers.set_output_rate(LONG_RUN_RATE)
+            await asyncio.sleep(0.5)
+            print(
+                f"\n开始长时间采集 {minutes} 分钟 @ "
+                f"{LONG_RUN_RATE.name}（0x{LONG_RUN_RATE.value:02X}）..."
+            )
             baseline = device.stats
-            start = time.monotonic()
+            # 同样要先排空：切速率期间积压的样本不属于这段观测。
+            remaining = device.pending_samples
             count = 0
+            start = time.monotonic()
             async for _ in device.samples():
+                if remaining > 0:
+                    remaining -= 1
+                    start = time.monotonic()
+                    continue
                 count += 1
                 if time.monotonic() - start >= minutes * 60:
                     break
             elapsed = time.monotonic() - start
             final = device.stats
+            expected = 100.0 if LONG_RUN_RATE is ReturnRate.HZ_100 else 50.0
             print(
                 f"采集 {elapsed:.0f}s / {count} 样本 "
-                f"（{count / elapsed:.2f} Hz）\n"
+                f"（{count / elapsed:.2f} Hz，期望 {expected:.0f}）\n"
                 f"  resync_count   +{final.resync_count - baseline.resync_count}\n"
                 f"  dropped_bytes  +{final.dropped_bytes - baseline.dropped_bytes}\n"
                 f"  dropped_samples+{final.dropped_samples - baseline.dropped_samples}\n"
