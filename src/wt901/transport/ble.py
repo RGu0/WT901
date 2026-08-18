@@ -14,6 +14,7 @@ Write        ``0000ffe9-0000-1000-8000-00805f9a34fb``
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, Protocol
@@ -28,6 +29,7 @@ from wt901.transport.base import Transport
 
 __all__ = [
     "DEFAULT_CONNECT_TIMEOUT",
+    "DEFAULT_WRITE_TIMEOUT",
     "NOTIFY_CHARACTERISTIC_UUID",
     "SERVICE_UUID",
     "WRITE_CHARACTERISTIC_UUID",
@@ -40,6 +42,13 @@ WRITE_CHARACTERISTIC_UUID = "0000ffe9-0000-1000-8000-00805f9a34fb"
 
 DEFAULT_CONNECT_TIMEOUT = 15.0
 """秒。与官方 Python 示例一致。"""
+
+DEFAULT_WRITE_TIMEOUT = 5.0
+"""秒。单条 5 字节指令的 GATT 写正常在几十毫秒内完成，5 秒是宽松上限。
+
+存在的意义不是催促慢链路，而是把「永远不返回」变成「失败」——真机上并发写同一
+特征时，bleak 的 CoreBluetooth 后端会让其中一条永久挂起，且不在任何超时之内。
+"""
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,6 +120,7 @@ class BleTransport(Transport):
         "_notify_characteristic",
         "_timeout",
         "_write_characteristic",
+        "write_timeout",
     )
 
     def __init__(
@@ -119,10 +129,12 @@ class BleTransport(Transport):
         *,
         timeout: float = DEFAULT_CONNECT_TIMEOUT,
         client_factory: ClientFactory = _default_client_factory,
+        write_timeout: float = DEFAULT_WRITE_TIMEOUT,
     ) -> None:
         super().__init__()
         self._address = address
         self._timeout = timeout
+        self.write_timeout = write_timeout
         self._client_factory = client_factory
         self._client: BleakClientLike | None = None
         self._notify_characteristic: Any = None
@@ -190,11 +202,26 @@ class BleTransport(Transport):
         self._write_characteristic = None
 
     async def write(self, data: bytes) -> None:
+        """把字节发给设备。
+
+        写入受 :attr:`write_timeout` 保护。``Transport`` 抽象承诺「写入要么完成
+        要么抛异常」，而一个永不返回的 GATT 写违背了这个承诺——真机上确实会发生：
+        并发写同一特征时，bleak 的 CoreBluetooth 后端只维护一个待完成写入的
+        future，其中一个会永远得不到回调。上层已改为串行化寄存器事务（RAY-177），
+        这里的超时是第二道防线：即使将来又出现并发写，也只会失败，不会静默挂死。
+        """
         client = self._client
         if client is None or self._write_characteristic is None:
             raise ConnectionLostError("传输未连接，写入被拒绝")
         try:
-            await client.write_gatt_char(self._write_characteristic, bytes(data))
+            await asyncio.wait_for(
+                client.write_gatt_char(self._write_characteristic, bytes(data)),
+                self.write_timeout,
+            )
+        except TimeoutError as exc:
+            raise TransportTimeoutError(
+                f"GATT 写入超时（{self.write_timeout}s）：{data.hex(' ')}"
+            ) from exc
         except Exception as exc:
             raise TransportError(f"写入失败：{exc}") from exc
 
