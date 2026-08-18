@@ -24,6 +24,7 @@ from wt901.protocol.frames import (
     RegisterResponse,
     decode_register_response,
 )
+from wt901.telemetry import Telemetry
 from wt901.transport.base import Transport
 from wt901.transport.ble import DEFAULT_CONNECT_TIMEOUT, BleTransport
 
@@ -164,6 +165,7 @@ class WT901Device:
         self._registers = RegisterAccess(self)
         self._register_listener = self._registers.dispatch
         self._reconnect_hook = self._registers.replay
+        self._telemetry = Telemetry(self)
 
     # ----- 构造与生命周期 -------------------------------------------------
 
@@ -258,6 +260,14 @@ class WT901Device:
         仍在以旧配置推数据。想测量新配置的效果，得先把它们取干净。
         """
         return self._samples.qsize()
+
+    @property
+    def telemetry(self) -> Telemetry:
+        """按需读取磁场、四元数、温度、电量、芯片时间、序列号、版本号。
+
+        这些量不在 ``0x61`` 实时数据流里，需要主动读寄存器取回。
+        """
+        return self._telemetry
 
     @property
     def registers(self) -> RegisterAccess:
