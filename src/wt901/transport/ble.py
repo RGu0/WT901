@@ -19,6 +19,7 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, Protocol
 
+from wt901.discovery import DiscoveredDevice
 from wt901.errors import (
     ConnectionLostError,
     DeviceNotFoundError,
@@ -93,19 +94,34 @@ class BleakClientLike(Protocol):
     async def write_gatt_char(self, characteristic: Any, data: bytes, /) -> None: ...
 
 
-ClientFactory = Callable[[str, float, Callable[[Any], None]], BleakClientLike]
-"""``(address, timeout, disconnected_callback) -> client``。"""
+ClientFactory = Callable[[Any, float, Callable[[Any], None]], BleakClientLike]
+"""``(target, timeout, disconnected_callback) -> client``。
+
+``target`` 是扫描得到的平台句柄，或退而求其次的地址字符串——bleak 两者都接受，
+但只有句柄是可靠的。
+"""
+
+
+def _resolve_target(target: str | DiscoveredDevice) -> tuple[str, Any]:
+    """把连接目标拆成 ``(用于展示的地址, 交给 bleak 的对象)``。
+
+    ``device_id`` 始终取地址字符串：它稳定、可打印、可写进日志与证据；句柄只在
+    本次扫描会话内有效，不适合当标识。
+    """
+    if isinstance(target, DiscoveredDevice):
+        return target.address, (target.handle if target.handle is not None else target.address)
+    return target, target
 
 
 def _default_client_factory(
-    address: str, timeout: float, disconnected_callback: Callable[[Any], None]
+    target: Any, timeout: float, disconnected_callback: Callable[[Any], None]
 ) -> BleakClientLike:
     # 延迟 import：bleak 会在导入时初始化平台后端，把它推迟到真正要连接的时
     # 候，模块本身就能在任何环境下被导入（例如只跑协议层测试的 CI）。
     from bleak import BleakClient
 
     client: BleakClientLike = BleakClient(
-        address, timeout=timeout, disconnected_callback=disconnected_callback
+        target, timeout=timeout, disconnected_callback=disconnected_callback
     )
     return client
 
@@ -117,6 +133,7 @@ class BleTransport(Transport):
         "_address",
         "_client",
         "_client_factory",
+        "_handle",
         "_notify_characteristic",
         "_timeout",
         "_write_characteristic",
@@ -125,14 +142,24 @@ class BleTransport(Transport):
 
     def __init__(
         self,
-        address: str,
+        target: str | DiscoveredDevice,
         *,
         timeout: float = DEFAULT_CONNECT_TIMEOUT,
         client_factory: ClientFactory = _default_client_factory,
         write_timeout: float = DEFAULT_WRITE_TIMEOUT,
     ) -> None:
+        """``target`` 可以是 :class:`~wt901.discovery.DiscoveredDevice` 或地址字符串。
+
+        **优先传 `DiscoveredDevice`。** 它携带扫描得到的平台句柄，可以直接交给
+        bleak；只给地址字符串时 bleak 需要自己再扫一遍做地址→句柄解析，而 macOS
+        上的地址只是 CoreBluetooth 分配的会话内标识，跨扫描会话解析并不可靠——
+        失败时报的是「设备未找到」，哪怕设备就在眼前、信号很强。
+
+        地址字符串路径保留给「已经知道地址、不想先扫描」的场景，但要接受它可能
+        连不上并需要退回先扫描。
+        """
         super().__init__()
-        self._address = address
+        self._address, self._handle = _resolve_target(target)
         self._timeout = timeout
         self.write_timeout = write_timeout
         self._client_factory = client_factory
@@ -156,8 +183,10 @@ class BleTransport(Transport):
     async def connect(self) -> None:
         if self.is_connected:
             return
+        # 交给客户端的是句柄（若有），不是地址字符串——这正是本类接受
+        # DiscoveredDevice 的全部意义。
         client = self._client_factory(
-            self._address, self._timeout, self._handle_disconnected
+            self._handle, self._timeout, self._handle_disconnected
         )
         try:
             await client.connect()

@@ -20,7 +20,7 @@ import time
 
 from wt901.device import WT901Device
 from wt901.discovery import scan
-from wt901.protocol.registers import ReturnRate
+from wt901.protocol.registers import Register, ReturnRate
 from wt901.telemetry import PollerConfig, TelemetryPoller
 
 
@@ -50,7 +50,7 @@ async def main() -> int:
     sensor = found[0]
     print(f"连接 {sensor.name} ({sensor.address}) rssi={sensor.rssi}\n")
 
-    async with await WT901Device.connect(sensor.address) as device:
+    async with await WT901Device.connect(sensor) as device:
         # --- 设备身份：与上位机软件比对 ---
         info = await device.telemetry.read_device_info()
         print("设备信息（请与上位机软件显示的值逐项比对）")
@@ -61,6 +61,23 @@ async def main() -> int:
 
         chip_time = await device.telemetry.read_chip_time()
         print(f"  芯片时间 = {chip_time}")
+
+        # 序列号/版本号的原始寄存器值。
+        #
+        # 首轮真机读到序列号为空字符串——那可能是设备本身没写序列号，也可能是
+        # 我们的解析把它丢了。光看解析结果分不清这两种情况，所以把原始值也打出来：
+        # 全零说明是设备侧为空，非零说明是解析的问题。
+        serial_low = await device.registers.read(Register.SERIAL_NUMBER)
+        serial_high = await device.registers.read(Register.SERIAL_NUMBER + 3)
+        version_raw = await device.registers.read(Register.VERSION_LOW)
+        print(
+            "  ── 原始寄存器（用于区分「设备为空」与「解析出错」）"
+            f"\n     0x7F..0x82 = {[f'0x{v & 0xFFFF:04X}' for v in serial_low.values]}"
+            f"\n     0x82..0x85 = {[f'0x{v & 0xFFFF:04X}' for v in serial_high.values]}"
+            f"\n     0x2E/0x2F  = 0x{version_raw.values[0] & 0xFFFF:04X}"
+            f" 0x{version_raw.values[1] & 0xFFFF:04X}"
+            f"  → uint32 0x{(version_raw.values[0] & 0xFFFF) | ((version_raw.values[1] & 0xFFFF) << 16):08X}"
+        )
 
         field = await device.telemetry.read_magnetic_field()
         if field.value is not None:
@@ -111,10 +128,16 @@ async def main() -> int:
                 f"\n默认轮询配置（磁场/四元数 1 s，温度/电量 30 s）的代价："
                 f"采样率下降 {impact:.1f}%"
             )
-            print(
-                "  这个数字就是 TelemetryPoller 默认关闭的依据。"
-                "需要持续磁场/四元数时再按需开启，并据此调周期。"
-            )
+            if impact < 2.0:
+                print(
+                    "  代价很小。默认关闭的理由因此**不是**「代价大」，而是"
+                    "「不用的人不该付费」，\n  以及代价随轮询周期缩短而增长——"
+                    "把周期从 1 s 调到 0.1 s 就是十倍的读取量。"
+                )
+            else:
+                print(
+                    "  代价可观。需要持续磁场/四元数时按需开启，并据此调周期。"
+                )
 
     print("\n连接已释放。")
     return 0

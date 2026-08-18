@@ -67,7 +67,7 @@ async def main() -> int:
     sensor = found[0]
     print(f"连接 {sensor.name} ({sensor.address}) rssi={sensor.rssi}\n")
 
-    async with await WT901Device.connect(sensor.address) as device:
+    async with await WT901Device.connect(sensor) as device:
         # --- 读事务：在实时数据流中拿到寄存器回帧 ---
         rate_code = await device.registers.read_output_rate()
         bandwidth_code = await device.registers.read_bandwidth()
