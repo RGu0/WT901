@@ -122,13 +122,38 @@ async def test_late_response_after_timeout_is_ignored() -> None:
     await device.close()
 
 
-async def test_concurrent_reads_of_same_register_both_resolve() -> None:
+async def test_concurrent_reads_of_same_register_serialize() -> None:
+    """同一寄存器的两个并发读现在**依次**执行，各自拿到一次响应。
+
+    RAY-177 把事务锁扩到了读，所以同一时刻只有一个读在途——两个读各发一条指令、
+    各等一次回帧。修复前它们并发发出两条 GATT 写，正是真机永久挂起的成因。
+    """
     device, transport = await _opened()
+    device.registers.read_timeout = 1.0
     loop = asyncio.get_running_loop()
-    first = loop.create_task(device.registers.read(Register.Q0))
-    second = loop.create_task(device.registers.read(Register.Q0))
-    await _answer(transport, Register.Q0, (1, 2, 3, 4))
-    assert (await first).values == (await second).values == (1, 2, 3, 4)
+
+    async def serve() -> None:
+        answered = 0
+        while True:
+            for command in transport.writes[answered:]:
+                answered += 1
+                if len(command) == 5 and command[2] == Register.READADDR:
+                    transport.feed(register_frame(command[3], (1, 2, 3, 4)))
+            await asyncio.sleep(0.001)
+
+    serving = loop.create_task(serve())
+    try:
+        first, second = await asyncio.gather(
+            device.registers.read(Register.Q0),
+            device.registers.read(Register.Q0),
+        )
+    finally:
+        serving.cancel()
+
+    assert first.values == second.values == (1, 2, 3, 4)
+    # 两个读各自发了一条指令，不是共用一次响应。
+    reads = [w for w in transport.writes if len(w) == 5 and w[2] == Register.READADDR]
+    assert len(reads) == 2
     await device.close()
 
 
