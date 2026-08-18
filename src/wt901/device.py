@@ -251,6 +251,15 @@ class WT901Device:
         return self._output_mode
 
     @property
+    def pending_samples(self) -> int:
+        """队列中尚未被取走的样本数。
+
+        配置变更之后这个数就是「陈数据」的量：写事务本身要花几百毫秒，其间设备
+        仍在以旧配置推数据。想测量新配置的效果，得先把它们取干净。
+        """
+        return self._samples.qsize()
+
+    @property
     def registers(self) -> RegisterAccess:
         """寄存器读写通道。
 

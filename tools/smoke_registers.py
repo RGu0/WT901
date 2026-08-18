@@ -28,15 +28,30 @@ from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 MEASURE_SECONDS = 10.0
 
 
-async def measure_rate(device: WT901Device, seconds: float) -> float:
-    """数指定时长内产出的样本数，换算成 Hz。"""
+async def measure_rate(device: WT901Device, seconds: float) -> tuple[float, int]:
+    """排空积压后测速率，返回 ``(Hz, 排空的积压样本数)``。
+
+    **测速前必须先排空。** 切换速率的写事务本身要 0.2 s（两个延时），加上稳定
+    等待和之前的寄存器读，这段时间里设备一直在以旧速率推数据而没人消费。不排
+    空的话这批积压会在测量窗口一开始被瞬间计入，把速率读高一个固定偏移——短
+    窗口下这个偏移足以把 10 Hz 测成 12.8 Hz。
+    """
+    backlog = device.pending_samples
+    remaining = backlog
     count = 0
-    deadline = time.monotonic() + seconds
+    start = time.monotonic()
+    deadline = start + seconds
     async for _ in device.samples():
+        if remaining > 0:
+            # 先把积压吃掉；计时窗口从最后一个积压样本之后才开始。
+            remaining -= 1
+            start = time.monotonic()
+            deadline = start + seconds
+            continue
         count += 1
         if time.monotonic() >= deadline:
             break
-    return count / seconds
+    return count / (time.monotonic() - start), backlog
 
 
 async def main() -> int:
@@ -46,10 +61,10 @@ async def main() -> int:
     if not found:
         print("没扫到 WT 设备，需要一台通电的 WT9011DCL-BT50。")
         return 2
-    target = found[0]
-    print(f"连接 {target.name} ({target.address}) rssi={target.rssi}\n")
+    sensor = found[0]
+    print(f"连接 {sensor.name} ({sensor.address}) rssi={sensor.rssi}\n")
 
-    async with await WT901Device.connect(target.address) as device:
+    async with await WT901Device.connect(sensor.address) as device:
         # --- 读事务：在实时数据流中拿到寄存器回帧 ---
         rate_code = await device.registers.read_output_rate()
         bandwidth_code = await device.registers.read_bandwidth()
@@ -64,7 +79,7 @@ async def main() -> int:
             await device.registers.set_output_rate(rate)
             await asyncio.sleep(0.5)  # 让设备切换稳定
             before = device.stats
-            measured = await measure_rate(device, MEASURE_SECONDS)
+            measured, backlog = await measure_rate(device, MEASURE_SECONDS)
             after = device.stats
             expected = 10.0 if rate is ReturnRate.HZ_10 else 50.0
             deviation = abs(measured - expected) / expected * 100
@@ -72,17 +87,16 @@ async def main() -> int:
             print(
                 f"设为 {rate.name:>6}: 实测 {measured:6.2f} Hz "
                 f"(期望 {expected:.0f}, 偏差 {deviation:4.1f}% → {verdict})  "
+                f"排空积压 {backlog:3d}  "
                 f"resync+{after.resync_count - before.resync_count} "
                 f"dropped+{after.dropped_samples - before.dropped_samples}"
             )
 
         await device.registers.set_bandwidth(Bandwidth.HZ_20)
-        print(f"\n带宽已设为 20 Hz，读回 = 0x{await device.registers.read_bandwidth():02X}")
-
-        print(
-            "\n断电重连验证（人工）：现在给传感器断电再上电，重跑本脚本，"
-            f"若 RRATE 读回仍为 0x{ReturnRate.HZ_50.value:02X} 则 save 生效。"
-        )
+        bandwidth_readback = await device.registers.read_bandwidth()
+        print(f"\n带宽设为 20 Hz，读回 = 0x{bandwidth_readback:02X}")
+        if bandwidth_code == Bandwidth.HZ_20:
+            print("  （起始就已是 20 Hz，这一项不构成写入证明）")
 
         # --- 长时间稳定性（RAY-170） ---
         if minutes > 0:
@@ -104,6 +118,23 @@ async def main() -> int:
                 f"  dropped_samples+{final.dropped_samples - baseline.dropped_samples}\n"
                 f"  reconnects     +{final.reconnects - baseline.reconnects}"
             )
+
+        # --- 持久化验证：放最后，且必须写一个与起始值不同的值 ---
+        #
+        # 上一轮这条测了个寂寞：起始 RRATE 就已经是 0x08，再写 0x08 读回 0x08，
+        # 什么也证明不了。要有结论，就得让写入前后的值不同。
+        persist_target = (
+            ReturnRate.HZ_10 if rate_code == ReturnRate.HZ_50 else ReturnRate.HZ_50
+        )
+        await device.registers.set_output_rate(persist_target)
+        readback = await device.registers.read_output_rate()
+        print(
+            f"\n持久化验证：起始 RRATE 为 0x{rate_code:02X}，已改写为 "
+            f"0x{persist_target.value:02X}（当场读回 0x{readback:02X}）。\n"
+            f"  → 现在给传感器**断电再上电**，重跑本脚本。\n"
+            f"  → 开头的「当前 RRATE」若为 0x{persist_target.value:02X}，save 生效；\n"
+            f"  → 若变回 0x{rate_code:02X} 或出厂值 0x06，说明没保存住。"
+        )
 
     print("\n连接已释放。")
     return 0
