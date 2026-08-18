@@ -1,14 +1,14 @@
 [project]
 name = "wt901"
 version = "0.1.0"
-description = "维特智能 WT901 系列惯性传感器硬件接口通用库（BLE 5.0 / 串口协议解析与指令下发）"
+description = "维特智能 WT901 系列惯性传感器硬件接口通用库（BLE 5.0 协议解析与指令下发）"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     # BLE 5.0 连接（WT9011DCL-BT50 等蓝牙从机）
     "bleak>=0.22,<1",
-    # 串口 / 蓝牙适配器透传
-    "pyserial>=3.5,<4",
+    # 串口/适配器透传需要额外的适配器硬件，目前没有该硬件，v0.1 不做（RAY-167 决策 O4）。
+    # 留一个用不上的依赖会让下游误以为串口路径可用，所以不预留。
 ]
 
 [project.optional-dependencies]
