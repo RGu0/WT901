@@ -23,13 +23,27 @@ DEFAULT_NAME_SUBSTRING = "WT"
 
 @dataclass(frozen=True, slots=True)
 class DiscoveredDevice:
-    """一次扫描发现的设备。"""
+    """一次扫描发现的设备。
+
+    **连接时请把整个对象传给** :meth:`~wt901.device.WT901Device.connect`，
+    不要只传 :attr:`address`。原因见 :attr:`handle`。
+    """
 
     address: str
-    """连接用的地址。**跨平台不可移植**：macOS 上是 CoreBluetooth UUID，
+    """稳定的展示/记录标识。**跨平台不可移植**：macOS 上是 CoreBluetooth UUID，
     Linux/Windows 上是 MAC 地址。不要跨主机持久化。"""
     name: str | None
     rssi: int | None
+    handle: Any = None
+    """底层扫描结果对象（bleak 的 ``BLEDevice``），**平台相关、会话内有效**。
+
+    连接时优先用它而不是地址字符串。给字符串时 bleak 需要自己再扫一遍把地址
+    解析成平台句柄，而 macOS 上的「地址」只是 CoreBluetooth 分配的会话内标识——
+    跨扫描会话解析并不可靠，解析不到就报 ``Device with address ... was not found``，
+    哪怕设备就在眼前、信号很强。官方 SDK 也是传对象而非地址。
+
+    它**不可持久化、不可跨进程传递**：重新扫描才能得到有效的句柄。
+    """
 
 
 DiscoverFunc = Callable[[float], Awaitable[Iterable[tuple[Any, Any]]]]
@@ -68,6 +82,7 @@ async def scan(
             address=device.address,
             name=device.name,
             rssi=getattr(advertisement, "rssi", None),
+            handle=device,
         )
         for device, advertisement in found
     ]

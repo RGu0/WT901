@@ -50,7 +50,7 @@ async def main() -> int:
     sensor = found[0]
     print(f"连接 {sensor.name} ({sensor.address}) rssi={sensor.rssi}\n")
 
-    async with await WT901Device.connect(sensor.address) as device:
+    async with await WT901Device.connect(sensor) as device:
         # --- 设备身份：与上位机软件比对 ---
         info = await device.telemetry.read_device_info()
         print("设备信息（请与上位机软件显示的值逐项比对）")
