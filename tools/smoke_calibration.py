@@ -77,6 +77,20 @@ class Observation:
         return abs(self.yaw_drift_deg) / self.seconds * 60 if self.seconds else 0.0
 
     @property
+    def yaw_steady_rate_deg_per_min(self) -> float:
+        """稳态漂移速率：只用后半段算。
+
+        整段速率在观测窗口里包含收敛过程时会被严重高估——首轮干净环境的
+        「校准前」就是这样：整段 338.99 °/min，而后半段只有 -0.417°/15s
+        ≈ 1.67 °/min。用整段值去和校准后比，等于把「融合收敛完了」算成
+        校准的功劳。稳态对稳态才是可比的。
+        """
+        if not self.seconds:
+            return 0.0
+        half_seconds = self.seconds / 2
+        return abs(self.yaw_drift_second_half_deg) / half_seconds * 60
+
+    @property
     def yaw_is_converging(self) -> bool:
         """后半段漂移明显小于前半段 → 是融合在收敛，不是稳态漂移。
 
@@ -293,13 +307,20 @@ async def main() -> int:
         print("对比")
         print("=" * 60)
 
-        yaw_before = abs(before.yaw_drift_deg) / before.seconds * 60
-        yaw_after = abs(after.yaw_drift_deg) / after.seconds * 60
-        print(f"  Yaw 漂移速率  {yaw_before:6.2f} → {yaw_after:6.2f} °/min", end="")
-        if yaw_before > 0:
-            print(f"   （{(yaw_before - yaw_after) / yaw_before * 100:+.0f}%）")
-        else:
-            print()
+        # 稳态对稳态。整段速率只在两段都未处于收敛期时才可比，所以它只作为
+        # 参考值打印，判读一律走稳态值。
+        yaw_before = before.yaw_steady_rate_deg_per_min
+        yaw_after = after.yaw_steady_rate_deg_per_min
+        print(f"  Yaw 稳态漂移  {yaw_before:6.2f} → {yaw_after:6.2f} °/min（后半段）")
+        print(
+            f"  Yaw 整段漂移  {before.yaw_rate_deg_per_min:6.2f} → "
+            f"{after.yaw_rate_deg_per_min:6.2f} °/min（含收敛，不可直接比）"
+        )
+        if before.yaw_is_converging:
+            print(
+                "    ↑ 校准前那段仍在收敛，整段值被收敛过程抬高了；"
+                "拿它当基线会把校准的效果算大。"
+            )
 
         print(
             f"  静置 Roll     {before.roll_mean_deg:+7.3f}° → "
@@ -335,6 +356,18 @@ async def main() -> int:
             )
         else:
             verdicts.append("✓ 校准后磁场模落在地磁场合理区间")
+            if (
+                before.field_magnitude_ut is not None
+                and EARTH_FIELD_MIN_UT
+                <= before.field_magnitude_ut
+                <= EARTH_FIELD_MAX_UT
+            ):
+                verdicts.append(
+                    "  注：校准**前**也在区间内，所以单看这个静止读数说明不了"
+                    "校准改善了什么。\n    硬磁偏置的直接证据是「转动时模值是否恒定」"
+                    "——本次转动期间模值跨度很大，\n    但那是校准中采到的未校准数据；"
+                    "本脚本没有测校准后的转动跨度，那才是严格的判据。"
+                )
 
         if after.yaw_is_converging:
             verdicts.append(
@@ -344,12 +377,13 @@ async def main() -> int:
             )
         elif yaw_after <= yaw_before:
             verdicts.append(
-                f"✓ Yaw 稳态漂移未变差（{yaw_before:.2f} → {yaw_after:.2f} °/min）"
+                f"✓ Yaw 稳态漂移未变差（{yaw_before:.2f} → {yaw_after:.2f} °/min，"
+                "均取后半段）"
             )
         else:
             verdicts.append(
-                f"✗ Yaw 稳态漂移变差（{yaw_before:.2f} → {yaw_after:.2f} °/min）"
-                "——校准结果比校准前更糟"
+                f"✗ Yaw 稳态漂移变差（{yaw_before:.2f} → {yaw_after:.2f} °/min，"
+                "均取后半段）——校准结果比校准前更糟"
             )
 
         accel_g = after.accel_magnitude / 9.80665
