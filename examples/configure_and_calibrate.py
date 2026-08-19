@@ -40,7 +40,11 @@ async def main() -> None:
         print("已设为 100 Hz / 20 Hz 带宽")
 
         info = await device.telemetry.read_device_info()
-        print(f"版本号 = {info.version}  电量 = {info.battery_percent}%")
+        # 电量同时打印百分比与原始值。百分比是查表得来的，单看它无法区分「电量
+        # 真的低」和「这次读数不对」——原始值 <340 才映射到 0%，而一次异常读取
+        # 也会落进同一档。库特意返回两者，示例就不该只用一半。
+        print(f"版本号 = {info.version}")
+        print(f"电量   = {info.battery_percent}%（原始值 {info.battery_raw}）")
 
         field = await device.telemetry.read_magnetic_field()
         # 量纲类型未知时 value 为 None——本库不猜系数，只给原始值。
