@@ -36,17 +36,31 @@ async def main() -> None:
         for device in devices:
             await device.registers.set_output_rate(ReturnRate.HZ_100)
 
+        # 连接与配置期间设备一直在推数据，这些样本积压在队列里。不排掉就把它们
+        # 算进测量窗口，短窗口的「速率」会被抬高一个固定偏移——10 秒窗口里几百个
+        # 积压样本能让 100 Hz 看着像 142 Hz。
+        #
+        # 只能按**当前积压量**排，不能写成 `while device.pending_samples`：设备在
+        # 持续推送，那个条件永远不会满足，是个死循环。
+        backlog = sum(device.pending_samples for device in devices)
+
         counts: Counter[str] = Counter()
         stream = merge(devices)
-        deadline = asyncio.get_running_loop().time() + seconds
-        async for sample in stream.samples():
+        samples = stream.samples()
+        for _ in range(backlog):
+            await anext(samples)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        async for sample in samples:
             counts[sample.device_id] += 1
-            if asyncio.get_running_loop().time() >= deadline:
+            if loop.time() >= deadline:
                 break
 
         for device_id, n in counts.items():
             print(f"{device_id}  {n} 个样本  {n / seconds:.1f} Hz")
         # out_of_order 非零说明有界延迟归并的超时路径放走了顺序，值得注意。
+        # emitted 比上面的计数多，多出来的正是被吃掉的那批积压样本。
         print(stream.stats)
     finally:
         for device in devices:
