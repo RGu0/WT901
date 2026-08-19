@@ -81,6 +81,19 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 同理，`DiscoveredDevice.handle` **只在本次扫描会话内有效**，不可持久化、不可跨
 进程传递，也不能把两次扫描的结果拼在一起用。
 
+### macOS：未授权蓝牙时进程会静默终止
+
+在「系统设置 → 隐私与安全性 → 蓝牙」里授权运行脚本的那个应用（Terminal.app、
+iTerm、IDE 等）。**没有授权时的表现不止一种**：
+
+| 现象 | 含义 |
+|---|---|
+| `TransportError: 扫描失败：BLE is not authorized …` | 授权被明确拒绝，bleak 能查到状态并报错 |
+| **零输出，退出码 134** | CoreBluetooth 直接 `abort()`（信号 6），Python 来不及抛任何异常 |
+
+第二种最难查——终端上什么都没有，看起来像脚本自己消失了。遇到它先确认授权，
+而不是去查代码。授权状态改变后需要**重新启动**那个应用才生效。
+
 ## 已知限制与实测结论
 
 ### 速率档位：`0x0A` 被有意排除

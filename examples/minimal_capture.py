@@ -3,6 +3,7 @@
     python examples/minimal_capture.py [秒数]
 
 设备出厂默认只有 10 Hz，所以「设速率」这一步不能省。
+macOS 未授权蓝牙时进程可能零输出、以退出码 134 终止，见 README「平台差异」。
 """
 
 import asyncio

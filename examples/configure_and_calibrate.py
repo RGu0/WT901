@@ -7,6 +7,9 @@
 远离铁磁物体的环境里把设备绕三轴各转一圈。
 
 本示例默认**不执行**校准，只演示调用形态；确认环境合适后把 DO_CALIBRATE 改成 True。
+
+macOS 上若本终端未获蓝牙授权，进程可能**零输出、以退出码 134 终止**——
+CoreBluetooth 直接 abort，Python 来不及抛任何异常。见 README「平台差异」。
 """
 
 import asyncio

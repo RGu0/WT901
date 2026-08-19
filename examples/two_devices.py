@@ -3,6 +3,9 @@
     python examples/two_devices.py [秒数]
 
 两台 WT901 的广播名可能完全相同，靠地址区分——``sample.device_id`` 取的就是地址。
+
+macOS 上若本终端未获蓝牙授权，进程可能**零输出、以退出码 134 终止**——
+CoreBluetooth 直接 abort，Python 来不及抛任何异常。见 README「平台差异」。
 """
 
 import asyncio
