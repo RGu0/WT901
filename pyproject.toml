@@ -40,3 +40,12 @@ testpaths = ["tests"]
 # 传输层与设备层的公开接口全是 async。逐个打 marker 只会漏掉几个，
 # 而漏掉的那个会「通过」得悄无声息——协程根本没被 await。
 asyncio_mode = "auto"
+
+# 用户级 uv 配置若把某个镜像设成 default，uv sync --locked 会因为 uv.lock 里
+# 记的是 pypi.org 的 registry/artifact URL 而逐条比对失败——症状是「换台机器就
+# 装不上」，而根因在仓库外，很难查。索引在这里显式固定，锁文件与索引的唯一权威
+# 都在仓库内，本机镜像配置只作用于其他项目。
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
