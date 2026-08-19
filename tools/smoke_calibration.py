@@ -209,7 +209,7 @@ async def main() -> int:
     sensor = found[0]
     print(f"连接 {sensor.name} ({sensor.address}) rssi={sensor.rssi}")
 
-    async with await WT901Device.connect(sensor.address) as device:
+    async with await WT901Device.connect(sensor) as device:
         await device.registers.set_output_rate(ReturnRate.HZ_50)
         await asyncio.sleep(0.5)
 
