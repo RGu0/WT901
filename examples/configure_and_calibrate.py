@@ -25,14 +25,18 @@ async def main() -> None:
         raise SystemExit("没有发现 WT 设备")
 
     async with await WT901Device.connect(found[0]) as device:
-        # 读回当前配置。一次寄存器读会返回连续 4 个寄存器，这是协议决定的。
-        async with device.registers.settings() as settings:
-            print(f"当前速率编码 = 0x{settings.output_rate:02X}")
-            print(f"当前带宽编码 = 0x{settings.bandwidth:02X}")
+        # 读当前配置。返回的是**原始编码**而不是枚举：设备上可能存着本库尚未
+        # 核实的档位（比如上位机软件设过），硬塞进枚举会抛异常，而调用方只是想
+        # 知道设备现在是什么状态。
+        print(f"当前速率编码 = 0x{await device.registers.read_output_rate():02X}")
+        print(f"当前带宽编码 = 0x{await device.registers.read_bandwidth():02X}")
 
-        # 写事务是原子的：解锁 → 写 → 保存，时序由库封装，调用方不需要关心。
-        await device.registers.set_output_rate(ReturnRate.HZ_100)
-        await device.registers.set_bandwidth(Bandwidth.HZ_20)
+        # settings() 是**批量写**，不是读：它给你一个空的 Settings，你填要改的项，
+        # 退出 async with 时统一下发；None 表示不动。逐项仍走完整的
+        # 解锁 → 写 → 保存 时序，不合并成一次解锁多次写。
+        async with device.registers.settings() as pending:
+            pending.output_rate = ReturnRate.HZ_100
+            pending.bandwidth = Bandwidth.HZ_20
         print("已设为 100 Hz / 20 Hz 带宽")
 
         info = await device.telemetry.read_device_info()

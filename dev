@@ -42,7 +42,10 @@ case "$action" in
         [ "$#" -eq 0 ] || { echo "lint accepts no arguments" >&2; exit 2; }
         sync
         "$uv_bin" run --locked --extra dev ruff check .
-        "$uv_bin" run --locked --extra dev mypy src
+        # examples/ 一并检查：它们是公开 API 的门面，示例里的类型错误就是文档里的
+        # 类型错误。注意 mypy 抓不到 f-string 的格式规格（f"{none_value:02X}" 它
+        # 不报），那一类只能靠真机跑一遍示例——见 RAY-175 验收标准第 2 条。
+        "$uv_bin" run --locked --extra dev mypy src examples
         ;;
     build)
         [ "$#" -eq 0 ] || { echo "build accepts no arguments" >&2; exit 2; }

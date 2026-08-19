@@ -38,7 +38,7 @@ try {
         "lint" {
             if ($Command.Count -gt 0) { throw "lint accepts no arguments" }
             & $uv.Source run --locked --extra dev ruff check .
-            if ($LASTEXITCODE -eq 0) { & $uv.Source run --locked --extra dev mypy src }
+            if ($LASTEXITCODE -eq 0) { & $uv.Source run --locked --extra dev mypy src examples }
         }
         "build" {
             if ($Command.Count -gt 0) { throw "build accepts no arguments" }
