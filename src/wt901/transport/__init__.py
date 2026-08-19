@@ -9,6 +9,8 @@ from wt901.transport.ble import (
     BleTransport,
 )
 from wt901.transport.memory import MemoryTransport
+from wt901.transport.recording import RecordingTransport
+from wt901.transport.replay import ReplayTransport
 
 __all__ = [
     "DEFAULT_CONNECT_TIMEOUT",
@@ -19,5 +21,7 @@ __all__ = [
     "DataCallback",
     "DisconnectCallback",
     "MemoryTransport",
+    "RecordingTransport",
+    "ReplayTransport",
     "Transport",
 ]
