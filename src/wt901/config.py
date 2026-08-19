@@ -182,11 +182,23 @@ class RegisterAccess:
 
     # ----- 写 -------------------------------------------------------------
 
-    async def write(self, register: int, value: int, *, persist: bool = True) -> None:
+    async def write(
+        self,
+        register: int,
+        value: int,
+        *,
+        persist: bool = True,
+        remember: bool = True,
+    ) -> None:
         """原子地写一个寄存器：解锁 → 延时 → 写 → 延时 → 保存。
 
         ``persist=False`` 跳过保存，配置只在本次上电期间有效。重连后的配置重放
         走这条路径——模块保存过的配置本就还在，没必要为此再写一次 flash。
+
+        ``remember=False`` 把这次写入排除在重连重放之外。**动作型寄存器必须用
+        它**：重放的语义是「把设备恢复成我配置过的样子」，对配置成立，对动作
+        不成立。校准就是动作——重放一次加计校准，等于在重连那一刻的姿态下重做
+        一次零位标定（见 :mod:`wt901.calibration`）。
         """
         async with self._transaction_lock:
             await self._device.write(commands.unlock())
@@ -196,7 +208,8 @@ class RegisterAccess:
             if persist:
                 await self._device.write(commands.save())
 
-        self._remember(register, value)
+        if remember:
+            self._remember(register, value)
 
     def _remember(self, register: int, value: int) -> None:
         """记下已下发的配置，供重连后重放。同一寄存器只保留最后一次。"""
