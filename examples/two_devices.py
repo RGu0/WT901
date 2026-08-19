@@ -24,8 +24,15 @@ async def main() -> None:
     if len(found) < 2:
         raise SystemExit(f"只发现 {len(found)} 台设备，本示例需要两台")
 
-    devices = [await WT901Device.connect(target) for target in found[:2]]
+    # 连接循环必须在 try 里面，逐台连上就登记。放在外面的话，第一台连上、第二台
+    # 超时，第一台就永远不会被关闭——而 BLE 连接不会因为进程里抛了异常就自己关掉，
+    # 泄漏的连接会让**下一次** connect 直接失败。这正是 Transport.__aexit__ 的注释
+    # 警告过的事。
+    devices: list[WT901Device] = []
     try:
+        for target in found[:2]:
+            print(f"正在连接 {target.name} ({target.address}) ……")
+            devices.append(await WT901Device.connect(target))
         for device in devices:
             await device.registers.set_output_rate(ReturnRate.HZ_100)
 

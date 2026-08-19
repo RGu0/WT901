@@ -24,7 +24,9 @@ async def main() -> None:
     if not found:
         raise SystemExit("没有发现 WT 设备")
 
-    async with await WT901Device.connect(found[0]) as device:
+    target = found[0]
+    print(f"连接 {target.name} ({target.address}) rssi={target.rssi}")
+    async with await WT901Device.connect(target) as device:
         # 读当前配置。返回的是**原始编码**而不是枚举：设备上可能存着本库尚未
         # 核实的档位（比如上位机软件设过），硬塞进枚举会抛异常，而调用方只是想
         # 知道设备现在是什么状态。
