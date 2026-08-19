@@ -37,22 +37,24 @@ async def main() -> int:
         print("没有发现 WT 设备：需要一台通电的 WT9011DCL-BT50。")
         return 2
     target = found[0]
-    print(f"连接 {target.name} ({target.address}) rssi={target.rssi}")
+    print(f"正在连接 {target.name} ({target.address}) rssi={target.rssi} ……")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     transport = RecordingTransport.to_file(
         BleTransport(target),
         path,
-        note=f"{rate_hz} Hz，{seconds} 秒，{target.name}",
+        note=f"{rate_hz} Hz，{seconds} 秒（含起始的速率切换），{target.name}",
     )
     device = WT901Device(transport)
     await device.open()
+    print("已连接，开始录制")
     try:
+        # 录制发生在传输层，从 connect 那一刻就在写文件。所以基线开头会包含
+        # 出厂默认 10 Hz 的若干帧和这次速率切换——**这是刻意保留的**：一份跨越
+        # 速率切换的基线同时覆盖了单帧与打包传输两种情形，比一段匀速数据更值钱。
+        print(f"  设置 {rate_hz} Hz ……")
         await device.registers.set_output_rate(ReturnRate[f"HZ_{rate_hz}"])
-        # 配置生效前设备仍在按旧速率推数据，先排空，否则基线开头混着旧配置的帧。
-        while device.pending_samples:
-            await asyncio.sleep(0.05)
-        print(f"录制中 …… {seconds} 秒")
+        print(f"  录制中 …… {seconds} 秒")
         await asyncio.sleep(seconds)
     finally:
         await device.close()

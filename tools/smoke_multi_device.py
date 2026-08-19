@@ -26,6 +26,30 @@ from wt901.multi import merge
 from wt901.protocol.registers import ReturnRate
 
 REPORT_EVERY = 30.0
+SETTLE_SECONDS = 0.5
+
+
+async def _settle(device: WT901Device, seconds: float) -> int:
+    """丢掉速率切换前后产生的样本，返回丢了几个。
+
+    **不能写成** ``while device.pending_samples: await asyncio.sleep(...)``：设备
+    在以新速率持续推送，而那个循环里没有任何消费者，队列永远不会归零——它是个
+    死循环。要真的把样本消费掉，而且只能按时间窗丢：「队列清空」这个状态在
+    100 Hz 下根本不会出现。
+    """
+    discarded = 0
+    iterator = device.samples()
+    deadline = time.monotonic() + seconds
+    try:
+        while time.monotonic() < deadline:
+            try:
+                await asyncio.wait_for(anext(iterator), timeout=0.2)
+            except (TimeoutError, StopAsyncIteration):
+                break
+            discarded += 1
+    finally:
+        await iterator.aclose()
+    return discarded
 
 
 def _report(counts: Counter[str], devices: list[WT901Device], elapsed: float) -> None:
@@ -55,16 +79,17 @@ async def main() -> int:
 
     devices: list[WT901Device] = []
     for target in found[:2]:
-        print(f"连接 {target.name} ({target.address}) …")
+        print(f"正在连接 {target.name} ({target.address}) ……")
         devices.append(await WT901Device.connect(target))
+        print(f"  已连接 {target.name}")
 
     try:
         for device in devices:
+            print(f"  设置 {rate_hz} Hz：{device.device_id[:8]}… ")
             await device.registers.set_output_rate(ReturnRate[f"HZ_{rate_hz}"])
-        # 配置生效前设备仍按旧速率推送，先排空再计数，否则前几秒的速率是虚高的。
         for device in devices:
-            while device.pending_samples:
-                await asyncio.sleep(0.05)
+            discarded = await _settle(device, SETTLE_SECONDS)
+            print(f"  丢弃切换期样本 {discarded} 个：{device.device_id[:8]}…")
 
         print(f"\n合流采集 {minutes} 分钟 @ {rate_hz} Hz（可中途关掉一台）")
         counts: Counter[str] = Counter()
