@@ -42,7 +42,7 @@ try {
         }
         "build" {
             if ($Command.Count -gt 0) { throw "build accepts no arguments" }
-            & $uv.Source run --locked --extra dev python -m compileall -q src
+            & $uv.Source build
         }
         "run" {
             if ($Command.Count -eq 0) { throw "run requires a command" }
