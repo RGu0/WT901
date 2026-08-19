@@ -4,6 +4,25 @@ version = "0.1.0"
 description = "维特智能 WT901 系列惯性传感器硬件接口通用库（BLE 5.0 协议解析与指令下发）"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["wt901", "witmotion", "imu", "ble", "bluetooth", "sensor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: System :: Hardware :: Hardware Drivers",
+    # py.typed 随包分发，下游 mypy --strict 可见完整类型（tests/test_package.py 有守卫）。
+    # 不加 "License :: OSI Approved :: MIT License" 分类器：PEP 639 之后
+    # license 字段是 SPDX 表达式，分类器成了第二处真相，两处迟早漂移。
+    "Typing :: Typed",
+]
 dependencies = [
     # BLE 5.0 连接（WT9011DCL-BT50 等蓝牙从机）
     "bleak>=0.22,<1",
@@ -19,6 +38,10 @@ dev = [
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
 ]
+
+[project.urls]
+Repository = "https://github.com/RGu0/WT901"
+Changelog = "https://github.com/RGu0/WT901/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling"]

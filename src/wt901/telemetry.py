@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from wt901.device import WT901Device
 
 __all__ = [
+    "Battery",
     "ChipTime",
     "PollerConfig",
     "Telemetry",
