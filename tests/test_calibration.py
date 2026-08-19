@@ -121,18 +121,64 @@ async def test_calibration_goes_through_the_write_transaction() -> None:
     await device.close()
 
 
-async def test_calibration_is_recorded_for_reconnect_replay() -> None:
-    """校准写入同样进入配置记忆——重连后 CALSW 会被重放为最后一次的值。
+async def test_calibration_is_not_recorded_for_reconnect_replay() -> None:
+    """校准写入**不进**配置记忆，因此不会被重连重放。
 
-    对磁场校准来说这意味着：若在校准**进行中**掉线重连，设备会被重新置入校准
-    态而不是悄悄回到正常输出。上层据 `is_field_calibrating` 判断即可，行为一致。
+    重放的语义是「把设备恢复成调用方配置过的样子」。这对配置成立，对动作不成立
+    ——重放一次加计校准，就是在重连那一刻的姿态下重做零位标定。
     """
     device, _ = await _opened()
+    await device.calibration.calibrate_acceleration()
     await device.calibration.start_field_calibration()
     await device.calibration.end_field_calibration()
 
-    applied = device.registers.applied_writes
-    calsw = [entry for entry in applied if entry.register == 0x01]
-    assert len(calsw) == 1
-    assert calsw[0].value == 0x0000  # 最后一次是「结束校准」
+    calsw = [
+        entry for entry in device.registers.applied_writes if entry.register == 0x01
+    ]
+    assert calsw == []
+    await device.close()
+
+
+async def test_replay_does_not_redo_acceleration_calibration() -> None:
+    """回归：重连重放绝不能重发加计校准。
+
+    这是本 scope 评审时用探针查出来的真实缺陷。加计校准把当前读数当零位基准；
+    自动重连可能发生在任何时刻、任何姿态下，重放它等于把一个倾斜姿态固化成
+    「水平」——不报错，只是从此所有角度都偏。
+    """
+    device, transport = await _opened()
+    await device.calibration.calibrate_acceleration()
+    transport.writes.clear()
+
+    await device.registers.replay()
+
+    assert ACCEL_CAL not in transport.writes
+    await device.close()
+
+
+async def test_replay_does_not_reenter_field_calibration() -> None:
+    """回归：重连重放绝不能把设备重新置入磁场校准态。
+
+    掉线发生在 with 体内时，配对的结束调用会随那次异常一起走完；此后再被重放
+    进校准态，就没有任何人会发结束指令了——正是上下文管理器要防的那件事。
+    """
+    device, transport = await _opened()
+    await device.calibration.start_field_calibration()
+    transport.writes.clear()
+
+    await device.registers.replay()
+
+    assert FIELD_START not in transport.writes
+    await device.close()
+
+
+async def test_ordinary_configuration_is_still_replayed() -> None:
+    """反向保护：排除的只有校准，普通配置的重放不能被误伤。"""
+    device, transport = await _opened()
+    await device.registers.set_output_rate(0x09)
+    transport.writes.clear()
+
+    await device.registers.replay()
+
+    assert bytes.fromhex("ffaa030900") in transport.writes
     await device.close()

@@ -9,6 +9,18 @@
 
 所以本模块的主推接口是 :meth:`Calibration.field_calibration` 这个异步上下文
 管理器：让「忘记结束」在语法上不可能发生。
+
+**校准写入不参与重连重放**（``remember=False``）。``RegisterAccess`` 会记住写过的
+配置，在自动重连后重放，好让设备恢复成调用方配置的样子。那个语义对配置成立，
+对动作不成立：
+
+- 重放加计校准 = 在重连那一刻的姿态下重做一次零位标定。设备此时未必水平，
+  于是把一个倾斜姿态固化成「水平」——而且不报错，只是从此所有角度都偏。
+- 重放「进入磁场校准」= 让设备悄悄回到校准态，而配对的结束调用早已随着那次
+  掉线的异常走完了，没有人会再发结束指令。上下文管理器想防的正是这件事。
+
+重连后设备的校准状态因此是**未知**的：本库不重放，也无从查询（``0x01`` 只写）。
+需要确定状态就重新校准一次。
 """
 
 from __future__ import annotations
@@ -56,9 +68,11 @@ class Calibration:
         偏差——而且看不出异常，只是一直偏。
 
         这是一次性动作，不需要配对的结束操作。
+
+        ``remember=False``：校准是动作不是配置，不参与重连重放。见模块文档末尾。
         """
         await self._device.registers.write(
-            Register.CALSW, CalibrationMode.ACCELERATION
+            Register.CALSW, CalibrationMode.ACCELERATION, remember=False
         )
 
     async def start_field_calibration(self) -> None:
@@ -70,13 +84,15 @@ class Calibration:
         优先使用 :meth:`field_calibration` 上下文管理器——它保证退出。
         """
         await self._device.registers.write(
-            Register.CALSW, CalibrationMode.MAGNETIC_FIELD
+            Register.CALSW, CalibrationMode.MAGNETIC_FIELD, remember=False
         )
         self._field_calibrating = True
 
     async def end_field_calibration(self) -> None:
         """退出磁场校准态，回到正常输出。"""
-        await self._device.registers.write(Register.CALSW, CalibrationMode.NORMAL)
+        await self._device.registers.write(
+            Register.CALSW, CalibrationMode.NORMAL, remember=False
+        )
         self._field_calibrating = False
 
     @asynccontextmanager
