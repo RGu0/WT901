@@ -2,7 +2,7 @@
 
 手动执行，不进 CI（CI 没有硬件，也没有蓝牙权限）：
 
-    ./dev run python tools/smoke_multi_device.py [分钟数] [速率Hz]
+    ./dev run python tools/smoke_multi_device.py [分钟数] [速率Hz] [单轮扫描秒数]
 
 默认 10 分钟、100 Hz —— 对应 RAY-174 的验收标准「双设备真机并发采集稳定运行
 ≥ 10 分钟，两路 dropped_samples 与 resync_count 记入 evidence」。
@@ -21,12 +21,45 @@ import time
 from collections import Counter
 
 from wt901.device import WT901Device
-from wt901.discovery import scan
+from wt901.discovery import DiscoveredDevice, scan
 from wt901.multi import merge
 from wt901.protocol.registers import ReturnRate
 
 REPORT_EVERY = 30.0
 SETTLE_SECONDS = 0.5
+SCAN_SECONDS = 15.0
+SCAN_ROUNDS = 3
+
+
+async def _scan_for_two(seconds: float) -> list[DiscoveredDevice]:
+    """反复整轮扫描，直到**一次**扫描里同时出现两台设备。
+
+    不把多轮结果并起来是有原因的：``DiscoveredDevice.handle`` 是 bleak 的
+    ``BLEDevice``，只在本次扫描会话内有效。把上一轮的句柄和这一轮的凑成一对去
+    连接，失效的那个会报「设备未找到」，哪怕它就在眼前——RAY-178 记的正是这件事。
+    所以宁可整轮重来，也不跨会话拼装。
+
+    WT901 的广播占空比不高，单轮扫得太短就容易只撞见其中一台。
+    """
+    found: list[DiscoveredDevice] = []
+    for attempt in range(1, SCAN_ROUNDS + 1):
+        everything = await scan(seconds, name_substring=None)
+        found = [
+            device
+            for device in everything
+            if device.name is not None and "wt" in device.name.lower()
+        ]
+        print(
+            f"第 {attempt}/{SCAN_ROUNDS} 轮（{seconds:.0f} 秒）："
+            f"BLE 设备 {len(everything)} 台，其中 WT {len(found)} 台"
+        )
+        for device in found:
+            print(f"    {device.address}  rssi={device.rssi}  name={device.name!r}")
+        if len({device.name for device in found}) == 1 and len(found) > 1:
+            print("    ↑ 两台广播名相同，靠地址区分（device_id 也取自地址）")
+        if len(found) >= 2:
+            return found
+    return found
 
 
 async def _settle(device: WT901Device, seconds: float) -> int:
@@ -68,13 +101,18 @@ def _report(counts: Counter[str], devices: list[WT901Device], elapsed: float) ->
 async def main() -> int:
     minutes = float(sys.argv[1]) if len(sys.argv) > 1 else 10.0
     rate_hz = int(sys.argv[2]) if len(sys.argv) > 2 else 100
+    scan_seconds = float(sys.argv[3]) if len(sys.argv) > 3 else SCAN_SECONDS
 
-    found = await scan(8.0, name_substring="WT")
-    print(f"扫描到 {len(found)} 台 WT 设备")
-    for device in found:
-        print(f"  {device.address}  rssi={device.rssi}  name={device.name!r}")
+    found = await _scan_for_two(scan_seconds)
     if len(found) < 2:
-        print("\n需要两台通电的 WT9011DCL-BT50；本条验收无法在单台设备上完成。")
+        print(
+            "\n需要两台通电的 WT9011DCL-BT50 同时出现在**同一次**扫描里；"
+            "本条验收无法在单台设备上完成。"
+        )
+        print(
+            "  若确信两台都通着电，试试拉长单轮扫描："
+            f"./dev run python {sys.argv[0]} {minutes} {rate_hz} 30"
+        )
         return 2
 
     devices: list[WT901Device] = []
