@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "维特智能 WT901 系列惯性传感器硬件接口通用库（BLE 5.0 协议解析与指令下发）"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["wt901", "witmotion", "imu", "ble", "bluetooth", "sensor"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -17,10 +19,10 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: System :: Hardware :: Hardware Drivers",
     # py.typed 随包分发，下游 mypy --strict 可见完整类型（tests/test_package.py 有守卫）。
+    # 不加 "License :: OSI Approved :: MIT License" 分类器：PEP 639 之后
+    # license 字段是 SPDX 表达式，分类器成了第二处真相，两处迟早漂移。
     "Typing :: Typed",
 ]
-# license 与 LICENSE 文件尚未确定，属于需要作者决定的事项，不由工具代选。
-# 发布到公开索引前必须补齐——PyPI 会接受没有许可证的包，而下游无法合法使用它。
 dependencies = [
     # BLE 5.0 连接（WT9011DCL-BT50 等蓝牙从机）
     "bleak>=0.22,<1",

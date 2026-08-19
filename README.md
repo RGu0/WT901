@@ -150,6 +150,10 @@ v0.1 仅 BLE。串口透传需要额外的适配器硬件，目前没有该硬�
 因为负底数配分数指数会得到复数）。算矢量模请用 `math.sqrt`，否则 `--strict` 会
 报 `no-any-return`。
 
+## 许可证
+
+[MIT](LICENSE)。
+
 ## 开发环境
 
 统一通过 `./dev` 入口执行，禁止直接使用系统 Python、Conda base 或裸 `pip`：

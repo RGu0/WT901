@@ -132,5 +132,16 @@ def test_protocol_reference_is_present() -> None:
     assert "上游资料缺陷清单" in text
 
 
+def test_license_is_present_and_declared() -> None:
+    """PyPI 会接受没有许可证的包，而下游无法合法使用它。
+
+    同时钉住「文件与元数据不分家」：只有 LICENSE 文件而 pyproject 不声明，
+    安装后的包里就没有许可证信息，下游的合规扫描看不到它。
+    """
+    text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "MIT License" in text
+    assert 'license = "MIT"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+
 def test_changelog_is_present() -> None:
     assert (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").find("0.1.0") > 0
