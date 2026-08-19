@@ -17,6 +17,7 @@ from typing import Self, TypeVar
 
 from wt901.calibration import Calibration
 from wt901.config import RegisterAccess
+from wt901.discovery import DiscoveredDevice
 from wt901.errors import ConfigurationError, TransportError
 from wt901.models import ImuSample
 from wt901.protocol.frames import (
@@ -174,7 +175,7 @@ class WT901Device:
     @classmethod
     async def connect(
         cls,
-        address: str,
+        target: str | DiscoveredDevice,
         *,
         timeout: float = DEFAULT_CONNECT_TIMEOUT,
         queue_size: int = DEFAULT_QUEUE_SIZE,
@@ -184,11 +185,19 @@ class WT901Device:
     ) -> WT901Device:
         """通过 BLE 连接一台设备。
 
-        ``address`` 跨平台不可移植：macOS 上是 CoreBluetooth UUID，
-        Linux/Windows 上是 MAC。用 :func:`wt901.discovery.scan` 获取。
+        **优先把 :func:`wt901.discovery.scan` 返回的整个
+        :class:`~wt901.discovery.DiscoveredDevice` 传进来**，不要只传地址::
+
+            devices = await scan()
+            async with await WT901Device.connect(devices[0]) as device:
+                ...
+
+        只给地址字符串时，bleak 需要自己再扫一遍做地址→平台句柄的解析。macOS 上
+        的地址只是 CoreBluetooth 分配的会话内标识，跨扫描会话解析并不可靠——失败
+        时报的是「设备未找到」，哪怕设备就在眼前、信号很强。
         """
         device = cls(
-            BleTransport(address, timeout=timeout),
+            BleTransport(target, timeout=timeout),
             queue_size=queue_size,
             auto_reconnect=auto_reconnect,
             reconnect_policy=reconnect_policy,

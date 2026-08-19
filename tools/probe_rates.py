@@ -70,7 +70,7 @@ async def main() -> int:
 
     verified: list[tuple[int, float]] = []
 
-    async with await WT901Device.connect(sensor.address) as device:
+    async with await WT901Device.connect(sensor) as device:
         for code, expected in CANDIDATES:
             await device.registers.write(Register.RRATE, code, persist=False)
             await asyncio.sleep(SETTLE)

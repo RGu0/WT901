@@ -41,7 +41,7 @@ async def main() -> int:
     target = wit[0]
     print(f"\n连接 {target.name} ({target.address}) ...")
     chunks: list[bytes] = []
-    transport = BleTransport(target.address)
+    transport = BleTransport(target)
     transport.on_data(chunks.append)
     async with transport:
         print("已连接，收数据中 ...")

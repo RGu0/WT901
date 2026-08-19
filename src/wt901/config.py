@@ -105,9 +105,18 @@ class RegisterAccess:
         # 同一个寄存器），一次响应把它们全部唤醒。
         self._waiters: dict[int, list[asyncio.Future[RegisterResponse]]] = {}
 
-        # 写事务必须串行。两个写交错会变成 解锁/解锁/写/写/保存/保存 —— 那不是
-        # 「两次写」，而是一次语义不明的操作。
-        self._write_lock = asyncio.Lock()
+        # **所有**寄存器事务必须串行，读和写都算。
+        #
+        # 写的理由早就清楚：两个写交错会变成 解锁/解锁/写/写/保存/保存，那不是
+        # 「两次写」而是一次语义不明的操作。
+        #
+        # 读的理由是真机教的：并发读会让多条 GATT 写同时打到同一个特征上，而
+        # bleak 的 CoreBluetooth 后端对同一特征只维护一个待完成写入的 future，
+        # 其中一个会永远得不到回调 → 永久挂起。离线测试发现不了，因为
+        # MemoryTransport.write 立即返回，不存在「写入未完成」这个状态。
+        #
+        # 并发读是正常用法（周期轮询、上层并发查询），不该由调用方负责避让。
+        self._transaction_lock = asyncio.Lock()
 
         self._applied: list[_AppliedWrite] = []
 
@@ -137,19 +146,20 @@ class RegisterAccess:
         command = commands.read_register(register)
         last_error: TransportTimeoutError | None = None
 
-        for _ in range(self.read_retries + 1):
-            loop = asyncio.get_running_loop()
-            waiter: asyncio.Future[RegisterResponse] = loop.create_future()
-            self._waiters.setdefault(register, []).append(waiter)
-            try:
-                await self._device.write(command)
-                return await asyncio.wait_for(waiter, self.read_timeout)
-            except TimeoutError:
-                last_error = TransportTimeoutError(
-                    f"读寄存器 0x{register:02X} 超时（{self.read_timeout}s）"
-                )
-            finally:
-                self._discard_waiter(register, waiter)
+        async with self._transaction_lock:
+            for _ in range(self.read_retries + 1):
+                loop = asyncio.get_running_loop()
+                waiter: asyncio.Future[RegisterResponse] = loop.create_future()
+                self._waiters.setdefault(register, []).append(waiter)
+                try:
+                    await self._device.write(command)
+                    return await asyncio.wait_for(waiter, self.read_timeout)
+                except TimeoutError:
+                    last_error = TransportTimeoutError(
+                        f"读寄存器 0x{register:02X} 超时（{self.read_timeout}s）"
+                    )
+                finally:
+                    self._discard_waiter(register, waiter)
 
         assert last_error is not None
         raise last_error
@@ -178,7 +188,7 @@ class RegisterAccess:
         ``persist=False`` 跳过保存，配置只在本次上电期间有效。重连后的配置重放
         走这条路径——模块保存过的配置本就还在，没必要为此再写一次 flash。
         """
-        async with self._write_lock:
+        async with self._transaction_lock:
             await self._device.write(commands.unlock())
             await asyncio.sleep(self.write_delay)
             await self._device.write(commands.write_register(register, value))
