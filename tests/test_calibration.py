@@ -18,6 +18,7 @@ async def _opened() -> tuple[WT901Device, MemoryTransport]:
     transport = MemoryTransport("dev")
     device = WT901Device(transport)
     device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.0
     await device.open()
     return device, transport
 

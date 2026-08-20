@@ -43,6 +43,7 @@ async def _opened() -> tuple[WT901Device, MemoryTransport]:
     transport = MemoryTransport("dev")
     device = WT901Device(transport)
     device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.0
     device.registers.read_timeout = 0.05
     await device.open()
     return device, transport
@@ -289,6 +290,7 @@ async def test_reconnect_replays_configuration_without_saving() -> None:
         reconnect_policy=ReconnectPolicy(initial_delay=0.01, max_delay=0.01),
     )
     device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.0
     await device.open()
 
     await device.registers.set_output_rate(ReturnRate.HZ_50)

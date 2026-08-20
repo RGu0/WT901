@@ -46,6 +46,7 @@ async def _opened() -> tuple[WT901Device, MemoryTransport]:
     transport = MemoryTransport("dev")
     device = WT901Device(transport)
     device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.0
     device.registers.read_timeout = 0.05
     await device.open()
     return device, transport
@@ -117,7 +118,8 @@ async def test_concurrent_reads_all_resolve_without_crosstalk() -> None:
 async def test_read_and_write_are_mutually_exclusive() -> None:
     """读事务进行中时写要等待，反之亦然——它们共用同一条链路。"""
     device, transport = await _opened()
-    device.registers.write_delay = 0.02
+    device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.02
 
     read_task = asyncio.get_running_loop().create_task(
         device.registers.read(Register.HX)
