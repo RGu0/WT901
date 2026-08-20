@@ -128,12 +128,37 @@ def test_magnetic_field_does_not_use_official_python_divide_by_120() -> None:
         (349, 5),
         (340, 5),
         (339, 0),
-        (0, 0),
+        (1, 0),
     ],
 )
 def test_battery_percent_steps(raw: int, expected: int) -> None:
     """12 个阶梯的每个边界与边界下一档都要对。
 
     官方实现是查表不是插值；改成插值会得到与上位机软件不一致的读数。
+    """
+    assert battery_percent(raw) == expected
+
+
+@pytest.mark.parametrize("raw", [0, -1, -391, -32768])
+def test_battery_percent_refuses_impossible_raw(raw: int) -> None:
+    """非正数不是「电量很低」，是「这次读数无效」。
+
+    ``raw`` 是电压 ×100。一台刚刚回答完寄存器读的设备不可能是 0 V。真机上确实
+    读到过 0（见 RAY-182），而阶梯表的最低一档会把它映射成一个看着正常的 0%
+    ——调用方据此去换电池，真正的问题却在别处。
+
+    寄存器值按 int16 解码，所以负数同样要拦：一个 >32767 的值会以负数出现。
+    """
+    assert battery_percent(raw) is None
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(340, 5), (339, 0), (1, 0)])
+def test_legitimate_low_battery_still_reports_a_percentage(
+    raw: int, expected: int
+) -> None:
+    """阈值以下的**合法**低电量读数不受影响。
+
+    这条是上一条的反向保护：若把「不可能」的判据放宽到 ``raw < 340``，真正快
+    没电的设备就报不出 0% 了，而那正是这个字段最该说话的时候。
     """
     assert battery_percent(raw) == expected

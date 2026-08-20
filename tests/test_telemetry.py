@@ -156,6 +156,39 @@ async def test_battery_returns_raw_and_percent(raw: int, percent: int) -> None:
     battery = await _run(device, transport, table, device.telemetry.read_battery())
     assert battery.raw == raw  # type: ignore[attr-defined]
     assert battery.percent == percent  # type: ignore[attr-defined]
+    assert battery.is_plausible  # type: ignore[attr-defined]
+    await device.close()
+
+
+async def test_battery_zero_raw_is_reported_as_unknown_not_as_empty() -> None:
+    """真机上读到过 raw = 0（RAY-182）。0 V 不是「没电」，是「这次读数无效」。
+
+    原始值仍然给出来——判定成因需要它，而这正是当初把 raw 与 percent 一起返回
+    的理由。
+    """
+    device, transport = await _opened()
+    table = {Register.POWER: (0, 0, 0, 0)}
+    battery = await _run(device, transport, table, device.telemetry.read_battery())
+
+    assert battery.raw == 0  # type: ignore[attr-defined]
+    assert battery.percent is None  # type: ignore[attr-defined]
+    assert not battery.is_plausible  # type: ignore[attr-defined]
+    await device.close()
+
+
+async def test_device_info_distinguishes_unread_battery_from_implausible_one() -> None:
+    """``DeviceInfo.battery_percent`` 的 ``None`` 有两种含义，靠 ``battery_raw`` 分。
+
+    读不到时两个字段都是 ``None``；读到了但数值不可能时，``battery_raw`` 有值而
+    ``battery_percent`` 为 ``None``。不区分的话，「设备没答」和「设备答了个不可能
+    的值」在调用方看来一模一样，而这两件事要查的方向完全不同。
+    """
+    device, transport = await _opened()
+    table = {Register.POWER: (0, 0, 0, 0)}
+    info = await _run(device, transport, table, device.telemetry.read_device_info())
+
+    assert info.battery_raw == 0  # type: ignore[attr-defined]
+    assert info.battery_percent is None  # type: ignore[attr-defined]
     await device.close()
 
 

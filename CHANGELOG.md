@@ -5,6 +5,20 @@
 
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 未发布
+
+### 变更
+
+* **`battery_percent()` 与 `Battery.percent` 现在可能是 `None`。** 原始值是电压
+  ×100，非正数不可能是一次真实测量；此前阶梯表把它映射成 0%，也就是把一个无效
+  读数说成「没电了」。真机上确实读到过原始值 0（RAY-182）。
+
+  新增 `Battery.is_plausible`。`DeviceInfo` 里两种 `None` 靠 `battery_raw` 区分：
+  它为 `None` 说明没读到，它有值而 `battery_percent` 为 `None` 说明读到了但数值
+  不可能。
+
+  **阈值以下的合法低电量读数不受影响**：339 仍是 0%，340 仍是 5%。
+
 ## 0.1.0
 
 首个版本。WT9011DCL-BT50 的 BLE 接口：设备发现与连接、`0x55` 协议解析、寄存器

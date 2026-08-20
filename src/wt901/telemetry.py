@@ -63,10 +63,20 @@ class ChipTime:
 
 @dataclass(frozen=True, slots=True)
 class Battery:
-    """电量。``percent`` 来自官方阶梯查表，不是线性插值。"""
+    """电量。``percent`` 来自官方阶梯查表，不是线性插值。
+
+    ``percent`` 为 ``None`` 表示 ``raw`` 不可能是一次真实测量（电压 ×100 不会是
+    非正数），此时只有 ``raw`` 可用。形状与 :class:`~wt901.models.MagneticField`
+    一致：拿不准的量纲/数值不硬给一个看着正常的结果。
+    """
 
     raw: int
-    percent: int
+    percent: int | None
+
+    @property
+    def is_plausible(self) -> bool:
+        """这次读数是否可能是真实测量。"""
+        return self.percent is not None
 
 
 @dataclass

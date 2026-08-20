@@ -126,12 +126,22 @@ BATTERY_PERCENT_STEPS: tuple[tuple[int, int], ...] = (
 """``(原始值下界, 百分比)``，按下界降序。取自官方 C# 实现。"""
 
 
-def battery_percent(raw: int) -> int:
-    """电量原始值 → 百分比。
+def battery_percent(raw: int) -> int | None:
+    """电量原始值 → 百分比。``None`` 表示原始值不可能是一次真实测量。
 
     这是一张查表而非线性插值：官方实现用的就是不等距阶梯，改成插值会得到与
     上位机软件不一致的读数。
+
+    ``raw`` 是电压 ×100。**非正数不是「电量很低」，而是「这次读数无效」**：
+    一台刚刚回答完寄存器读的设备不可能是 0 V。阶梯表的最低一档把 ``<340`` 映射
+    到 0%，若原样套用，一个无效读数会变成一个看着正常的「没电了」——调用方据此
+    去换电池，而真正的问题在别处。这与 :func:`magnetic_field_to_ut` 在量纲类型
+    未知时返回 ``None`` 是同一条原则：**不把不知道的东西说成知道的样子。**
+
+    阈值以下的**合法**低电量读数不受影响：339 仍然是 0%，340 仍然是 5%。
     """
+    if raw <= 0:
+        return None
     for threshold, percent in BATTERY_PERCENT_STEPS:
         if raw >= threshold:
             return percent
