@@ -12,6 +12,10 @@
 3. 100 Hz，消费样本
 4. 200 Hz，消费样本
 
+第二阶段（`--isolate-write`）把「写事务」从「速率变化」里分离出来，见下方
+:func:`isolate_write`。第一阶段的数据指向写事务而不是采集负载，第二阶段用来证实
+或推翻它。
+
 第 1 档最接近首次读到 391（正常值）的那次运行——RAY-172 的 smoke_telemetry 是在
 切到 100 Hz 之前读的设备信息；而读到 0 的那次是在设完 100 Hz 之后读的。这是本次
 实验要证实或推翻的那个差异。
@@ -109,7 +113,89 @@ async def _condition(
     return zeros
 
 
+async def _read_once(device: WT901Device) -> tuple[int, ...] | None:
+    try:
+        response = await device.registers.read(Register.POWER)
+    except WT901Error:
+        return None
+    return tuple(response.values)
+
+
+async def isolate_write(device: WT901Device, repeats: int, flash_repeats: int) -> None:
+    """把「写事务」从「速率变化」里分离出来。
+
+    第一阶段的零值全部出现在**该档的第一次读取**，而唯一没有调用
+    ``set_output_rate`` 的那一档一次也没出现。所以可疑的是紧接在前的那次写，
+    不是采集负载。
+
+    这里每次都写**同一个速率值**（不改变任何配置），于是「速率变了」被排除；
+    剩下的变量只有写事务本身。四组：
+
+    * Ⓐ 不写，连读 —— 基线，期望零次
+    * Ⓑ ``persist=False``（解锁 + 写，**不保存**）后立刻读
+    * Ⓒ 完整事务（含 ``save``，写 flash）后立刻读
+    * Ⓓ 完整事务后**等 0.5 秒**再读 —— 若零值消失，说明它是个瞬时状态
+
+    Ⓒ 每次都写 flash，所以次数单独控制，默认远小于其他组。
+    """
+    rate = ReturnRate.HZ_100
+    await device.registers.set_output_rate(rate)
+    stop = asyncio.Event()
+    drain = asyncio.ensure_future(_drain(device, stop))
+
+    try:
+        baseline = [await _read_once(device) for _ in range(repeats)]
+        _report("Ⓐ 不写任何寄存器，连读", baseline)
+
+        no_save: list[tuple[int, ...] | None] = []
+        for _ in range(repeats):
+            await device.registers.write(Register.RRATE, rate, persist=False)
+            no_save.append(await _read_once(device))
+        _report("Ⓑ 写但不保存（persist=False）后立刻读", no_save)
+
+        with_save: list[tuple[int, ...] | None] = []
+        for _ in range(flash_repeats):
+            await device.registers.write(Register.RRATE, rate, persist=True)
+            with_save.append(await _read_once(device))
+        _report(f"Ⓒ 完整事务（含 save，写 flash）后立刻读 ×{flash_repeats}", with_save)
+
+        delayed: list[tuple[int, ...] | None] = []
+        for _ in range(flash_repeats):
+            await device.registers.write(Register.RRATE, rate, persist=True)
+            await asyncio.sleep(0.5)
+            delayed.append(await _read_once(device))
+        _report(f"Ⓓ 完整事务后等 0.5 秒再读 ×{flash_repeats}", delayed)
+    finally:
+        stop.set()
+        try:
+            await asyncio.wait_for(drain, timeout=2.0)
+        except (TimeoutError, asyncio.CancelledError):
+            drain.cancel()
+
+    print(
+        "\n判读：Ⓐ 应为 0。若 Ⓑ 也为 0 而 Ⓒ 不为 0，可疑的是 save（flash 写）；"
+        "\n若 Ⓑ 与 Ⓒ 都不为 0，则是写事务本身。Ⓓ 若为 0，说明这是个瞬时状态，"
+        "\n一次延时或重读就能避开。"
+    )
+
+
 async def main() -> int:
+    if "--isolate-write" in sys.argv:
+        rest = [a for a in sys.argv[1:] if a != "--isolate-write"]
+        repeats = int(rest[0]) if rest else 8
+        flash_repeats = int(rest[1]) if len(rest) > 1 else 4
+        found = await scan(15.0)
+        if not found:
+            print("没有发现 WT 设备。")
+            return 2
+        print(f"设备 {found[0].name} ({found[0].address}) rssi={found[0].rssi}")
+        device = await WT901Device.connect(found[0])
+        try:
+            await isolate_write(device, repeats, flash_repeats)
+        finally:
+            await device.close()
+        return 0
+
     reads = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_READS
 
     found = await scan(15.0)
