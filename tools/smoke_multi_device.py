@@ -7,8 +7,11 @@
 默认 10 分钟、100 Hz —— 对应 RAY-174 的验收标准「双设备真机并发采集稳定运行
 ≥ 10 分钟，两路 dropped_samples 与 resync_count 记入 evidence」。
 
-**中途可以关掉其中一台。** 每 30 秒打印一次分路计数，某一路停止增长而另一路
-继续，就是「单台设备断连不影响另一台」的真机证据。脚本不会因此退出。
+**中途可以关掉其中一台。** 每 30 秒打印一次分路的**区间**速率，某一路停止增长而
+另一路以原速率继续，才是「单台设备断连不影响另一台」的真机证据。脚本不会因此退出。
+
+只看「另一路还在动」是不够的：RAY-190 里存活那路确实还在动，但速率塌到十分之一、
+其余样本被静默丢弃。所以这里同时打 ``dropped`` 的区间增量——它不涨才算数。
 
 退出码：0 双路都有数据；1 有路没数据；2 没扫到两台设备。
 """
@@ -19,6 +22,7 @@ import asyncio
 import sys
 import time
 from collections import Counter
+from dataclasses import dataclass, field
 
 from wt901.device import WT901Device
 from wt901.discovery import DiscoveredDevice, scan
@@ -85,17 +89,56 @@ async def _settle(device: WT901Device, seconds: float) -> int:
     return discarded
 
 
-def _report(counts: Counter[str], devices: list[WT901Device], elapsed: float) -> None:
+@dataclass(slots=True)
+class _Snapshot:
+    """上一次报告时的计数，用来算区间速率。"""
+
+    elapsed: float = 0.0
+    counts: Counter[str] = field(default_factory=Counter)
+    dropped: dict[str, int] = field(default_factory=dict)
+
+
+def _snapshot(
+    counts: Counter[str], devices: list[WT901Device], elapsed: float
+) -> _Snapshot:
+    return _Snapshot(
+        elapsed=elapsed,
+        counts=Counter(counts),
+        dropped={device.device_id: device.stats.dropped_samples for device in devices},
+    )
+
+
+def _report(
+    counts: Counter[str],
+    devices: list[WT901Device],
+    elapsed: float,
+    previous: _Snapshot,
+    *,
+    label: str | None = None,
+) -> _Snapshot:
+    """打印**区间**速率，不是全程平均。
+
+    这个区别是 RAY-190 换来的。当时这里打的是 ``n / 全程耗时``，于是存活设备从
+    198.6 Hz 塌到 19.5 Hz 这件事，在报告里表现为四行缓慢下滑的 188 → 179 → 171
+    → 163——看着像轻微退化，实则是十倍塌陷。全程平均会把任何突变摊平成缓坡，
+    而故障恰恰是突变。同理 ``dropped`` 也带上区间增量：总数在涨还是停了，
+    是两件完全不同的事。
+    """
+    window = max(elapsed - previous.elapsed, 1e-9)
     parts = []
     for device in devices:
         stats = device.stats
+        device_id = device.device_id
+        rate = (counts[device_id] - previous.counts[device_id]) / window
+        gained = stats.dropped_samples - previous.dropped.get(device_id, 0)
         parts.append(
-            f"{device.device_id[:8]}… n={counts[device.device_id]:6d} "
-            f"({counts[device.device_id] / elapsed:5.1f} Hz) "
-            f"dropped={stats.dropped_samples} resync={stats.resync_count} "
-            f"reconnects={stats.reconnects}"
+            f"{device_id[:8]}… n={counts[device_id]:6d} ({rate:5.1f} Hz) "
+            f"dropped={stats.dropped_samples}(+{gained}) "
+            f"resync={stats.resync_count} reconnects={stats.reconnects}"
         )
-    print(f"  [{elapsed / 60:5.2f} 分] " + " | ".join(parts))
+    head = label if label is not None else f"[{elapsed / 60:5.2f} 分]"
+    print(f"  {head} " + " | ".join(parts))
+    return _snapshot(counts, devices, elapsed)
 
 
 async def main() -> int:
@@ -138,6 +181,8 @@ async def main() -> int:
         previous_t = None
 
         stream = merge(devices)
+        window = _snapshot(counts, devices, 0.0)
+        opening = _snapshot(counts, devices, 0.0)
         async for sample in stream.samples():
             counts[sample.device_id] += 1
             if previous_t is not None and sample.t_host < previous_t:
@@ -145,14 +190,15 @@ async def main() -> int:
             previous_t = sample.t_host
             now = time.monotonic()
             if now >= next_report:
-                _report(counts, devices, now - start)
+                window = _report(counts, devices, now - start, window)
                 next_report += REPORT_EVERY
             if now >= deadline:
                 break
 
         elapsed = time.monotonic() - start
         print(f"\n结束，实际运行 {elapsed / 60:.2f} 分钟")
-        _report(counts, devices, elapsed)
+        _report(counts, devices, elapsed, window)
+        _report(counts, devices, elapsed, opening, label="[全程平均]")
         print(f"\n合流统计：{stream.stats}")
         print(f"  逐样本核对的乱序数：{order_violations}")
         print(

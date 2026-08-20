@@ -19,6 +19,24 @@
 **这种乱序被记进** :attr:`MergeStats.out_of_order`，不做隐藏。一个悄悄乱序的合流
 比一个会卡住的合流更难查——上层拿到的是看着正常、时序却错的数据。
 
+## 等待预算属于样本，不属于流
+
+一条流超过预算之后就被标记为**停滞**并移出等待集，直到它自己交出样本为止；这段
+时间里合流按存活流全速推进。
+
+这一条不是优化，是正确性。预算若按「每发一个样本就重新等一遍那条不说话的流」来
+付，存活流的产出上限就变成绝对值 ``1 / max_latency``——默认配置下 20 Hz，与设备
+实际速率无关。真机上关掉两台中的一台，存活那台从 198.6 Hz 塌到 19.5 Hz，其余
+九成样本在设备队列里被丢掉（RAY-190）。它满足「另一台没有停」的字面要求，却把
+一条十抽一的流交给上层，而且不报错。
+
+停滞流恢复时可能造成乱序——那正是有界延迟归并本来就接受、且已被
+:attr:`MergeStats.out_of_order` 计入的代价。
+
+停滞**不是**结束：掉电设备的流并没有结束，重连策略仍在重试，所以它不计入
+:attr:`MergeStats.sources_finished`。一条流停滞期间发出的样本计入
+:attr:`MergeStats.emitted_while_stalled`——那段输出并没有真正在归并。
+
 ``max_latency=None`` 恢复严格归并。它适用于回放这类**有限且不会中断**的流，那里
 确定性比活性重要；对着真实设备用它，等于把「一台掉线」变成「整条流挂起」。
 
@@ -56,8 +74,19 @@ class MergeStats:
     out_of_order: int = 0
     """``t_host`` 早于上一个已发样本的样本数。非零说明超时路径被走到了。"""
     latency_flushes: int = 0
-    """等待预算超时的次数。"""
+    """等待预算超时的次数。
+
+    一条持续静默的流只贡献**一次**——超时后它就被移出等待集，不再每个样本付一次。
+    所以这个数反映的是抖动频次，不会被一台掉线设备刷爆。
+    """
     sources_finished: int = 0
+    emitted_while_stalled: int = 0
+    """至少有一条流处于停滞状态时发出的样本数。
+
+    这段输出是单边的：它没有等齐所有流，顺序只在存活流之间成立。合流不会因此变慢
+    或报错，所以**不看这个字段就发现不了**——它与 ``emitted`` 的比值就是「这次采集
+    有多大一部分并没有真正在归并」。
+    """
 
 
 @dataclass(slots=True)
@@ -69,6 +98,8 @@ class _Source:
     sample: ImuSample | None = None
     arrived: float = 0.0
     finished: bool = False
+    stalled: bool = False
+    """已超出等待预算，暂不参与等待。它的取样任务仍在后台挂着。"""
 
 
 async def _next_sample(iterator: AsyncIterator[ImuSample]) -> ImuSample | None:
@@ -111,6 +142,10 @@ class MergedStream:
         sources = [_Source(iterator=device.samples()) for device in self._devices]
         try:
             while True:
+                # 先收下已经完成的取样。停滞流不进等待集，只能靠这一步回到归并——
+                # 少了它，一条恢复了的流会被一直晾着。
+                self._collect(sources, loop)
+
                 live = [source for source in sources if not source.finished]
                 if not live:
                     return
@@ -121,48 +156,78 @@ class MergedStream:
                             _next_sample(source.iterator)
                         )
 
-                waiting = [source for source in live if source.sample is None]
+                pending = [source for source in live if source.sample is None]
                 ready = [source for source in live if source.sample is not None]
 
-                if waiting:
-                    timeout = self._budget(ready, loop)
-                    done, _ = await asyncio.wait(
-                        [source.task for source in waiting if source.task is not None],
-                        timeout=timeout,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    progressed = self._harvest(waiting, done, loop)
-                    if progressed or not ready:
+                if pending and not ready:
+                    # 没有可发的样本，等下去不会让任何数据变旧，所以不设期限，
+                    # 而且**停滞流也要等**：否则它恢复了都没人来收。
+                    await self._wait(pending, None)
+                    continue
+
+                holding = [source for source in pending if not source.stalled]
+                if holding:
+                    await self._wait(holding, self._budget(ready, loop))
+                    if self._collect(holding, loop):
                         # 有流交出了样本或结束了，重新评估；此时可能已经凑齐。
                         continue
+                    for source in holding:
+                        source.stalled = True
                     self._stats.latency_flushes += 1
 
                 candidate = self._smallest(sources)
                 if candidate is None:
                     continue
                 source, sample = candidate
-                yield self._take(source, sample)
+                stalled = any(
+                    other.stalled and not other.finished for other in sources
+                )
+                yield self._take(source, sample, stalled=stalled)
         finally:
             await self._release(sources)
 
-    def _budget(self, ready: list[_Source], loop: asyncio.AbstractEventLoop) -> float | None:
-        """还能等多久。没有待发样本时无需设限——等下去不会让任何数据变旧。"""
-        if not ready or self._max_latency is None:
+    @staticmethod
+    async def _wait(
+        sources: list[_Source], timeout: float | None
+    ) -> None:
+        """等这些流里任意一条交出结果，或等到超时。
+
+        只负责等；收割交给 :meth:`_collect`。分开是因为这两件事的作用域不同：
+        等待只看被挑出来的那几条流，收割必须覆盖全部——包括没在等待集里的停滞流。
+        """
+        tasks = [source.task for source in sources if source.task is not None]
+        if not tasks:
+            return
+        await asyncio.wait(
+            tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+
+    def _budget(
+        self, ready: list[_Source], loop: asyncio.AbstractEventLoop
+    ) -> float | None:
+        """最早的那个待发样本还能等多久。``max_latency=None`` 即严格归并，不设限。
+
+        预算锚在样本的到达时刻上，所以它衡量的是「这个样本最多延迟多久」。调用方
+        保证 ``ready`` 非空——没有待发样本时根本不需要预算，那条路径在主循环里
+        单独处理，不在这里兜底：一个永远不会走到的分支也永远不会被验证。
+        """
+        if self._max_latency is None:
             return None
         deadline = min(source.arrived for source in ready) + self._max_latency
         return max(0.0, deadline - loop.time())
 
-    def _harvest(
-        self,
-        waiting: list[_Source],
-        done: set[asyncio.Task[ImuSample | None]],
-        loop: asyncio.AbstractEventLoop,
+    def _collect(
+        self, sources: list[_Source], loop: asyncio.AbstractEventLoop
     ) -> bool:
-        """收割已完成的取样任务。返回是否有任何进展。"""
+        """收下所有已完成的取样任务。返回是否有任何进展。
+
+        判据是 ``task.done()`` 而不是「刚才那次 wait 返回的集合」：停滞流不进等待
+        集，它的任务永远不会出现在那个集合里，只能靠这里发现它已经完成。
+        """
         progressed = False
-        for source in waiting:
+        for source in sources:
             task = source.task
-            if task is None or task not in done:
+            if task is None or not task.done():
                 continue
             source.task = None
             sample = task.result()
@@ -172,6 +237,7 @@ class MergedStream:
             else:
                 source.sample = sample
                 source.arrived = loop.time()
+            source.stalled = False
             progressed = True
         return progressed
 
@@ -192,13 +258,17 @@ class MergedStream:
             return None
         return min(candidates, key=lambda pair: pair[1].t_host)
 
-    def _take(self, source: _Source, sample: ImuSample) -> ImuSample:
+    def _take(
+        self, source: _Source, sample: ImuSample, *, stalled: bool = False
+    ) -> ImuSample:
         source.sample = None
         if self._last_t is not None and sample.t_host < self._last_t:
             self._stats.out_of_order += 1
         else:
             self._last_t = sample.t_host
         self._stats.emitted += 1
+        if stalled:
+            self._stats.emitted_while_stalled += 1
         return sample
 
     @staticmethod
