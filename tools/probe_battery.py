@@ -179,7 +179,67 @@ async def isolate_write(device: WT901Device, repeats: int, flash_repeats: int) -
     )
 
 
+async def measure_recovery(device: WT901Device, rounds: int, step: float) -> None:
+    """测量 ``save`` 之后 ``0x64`` 需要多久才恢复。
+
+    第二阶段已确定成因是 ``save``（flash 写），且是瞬时的：立刻读 4/4 为零，
+    等 0.5 秒后 0/4。但 0 与 0.5 秒之间没有数据，**直接取 0.5 秒是在猜**——它
+    会让每一次持久化写入都多花半秒，而真正需要的可能只有几十毫秒。
+
+    这里每轮做一次完整事务，然后每 ``step`` 秒读一次直到读出非零，记录耗时。
+    每轮都写 flash，所以轮数默认很小。
+    """
+    rate = ReturnRate.HZ_100
+    elapsed: list[float | None] = []
+    loop = asyncio.get_running_loop()
+
+    for index in range(1, rounds + 1):
+        await device.registers.write(Register.RRATE, rate, persist=True)
+        start = loop.time()
+        recovered: float | None = None
+        for _ in range(int(2.0 / step) + 1):
+            values = await _read_once(device)
+            if values is not None and values[0] != 0:
+                recovered = loop.time() - start
+                break
+            await asyncio.sleep(step)
+        elapsed.append(recovered)
+        shown = f"{recovered * 1000:.0f} ms" if recovered is not None else "2 秒内未恢复"
+        print(f"  第 {index}/{rounds} 轮：{shown}")
+
+    ok = [e for e in elapsed if e is not None]
+    if not ok:
+        print("\n所有轮次都没在 2 秒内恢复——与第二阶段的结果矛盾，需要重跑确认。")
+        return
+    print(
+        f"\n恢复耗时：最小 {min(ok) * 1000:.0f} ms，最大 {max(ok) * 1000:.0f} ms，"
+        f"共 {len(ok)}/{rounds} 轮恢复"
+    )
+    print(
+        "\n注意：这个耗时含一次寄存器读的往返（读超时 0.5 s、间隔 "
+        f"{step * 1000:.0f} ms），所以是**上界**而非设备恢复时间本身。"
+        "\n取延时值时按最大值留足余量，不要贴着最小值取。"
+    )
+
+
 async def main() -> int:
+    if "--recovery-time" in sys.argv:
+        rest = [a for a in sys.argv[1:] if a != "--recovery-time"]
+        rounds = int(rest[0]) if rest else 5
+        step = float(rest[1]) if len(rest) > 1 else 0.025
+        found = await scan(15.0)
+        if not found:
+            print("没有发现 WT 设备。")
+            return 2
+        print(f"设备 {found[0].name} ({found[0].address}) rssi={found[0].rssi}")
+        print(f"{rounds} 轮，每轮 save 后每 {step * 1000:.0f} ms 读一次直到非零。\n")
+        device = await WT901Device.connect(found[0])
+        try:
+            await measure_recovery(device, rounds, step)
+        finally:
+            await device.close()
+        return 0
+
     if "--isolate-write" in sys.argv:
         rest = [a for a in sys.argv[1:] if a != "--isolate-write"]
         repeats = int(rest[0]) if rest else 8
