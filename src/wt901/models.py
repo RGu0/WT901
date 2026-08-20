@@ -131,7 +131,14 @@ class MagneticField:
 
 @dataclass(frozen=True, slots=True)
 class DeviceInfo:
-    """设备身份信息。字段为 ``None`` 表示尚未读取或读取失败。"""
+    """设备身份信息。字段为 ``None`` 表示尚未读取或读取失败。
+
+    ``battery_percent`` 多一层含义，靠 ``battery_raw`` 区分：
+
+    * ``battery_raw is None`` —— 这一项没读到（未读或读失败）
+    * ``battery_raw`` 有值而 ``battery_percent`` 为 ``None`` —— 读到了，但原始值
+      不可能是一次真实测量，本库拒绝把它映射成一个看着正常的百分比
+    """
 
     serial_number: str | None = None
     version: str | None = None

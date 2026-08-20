@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_READ_TIMEOUT",
+    "DEFAULT_SAVE_DELAY",
     "DEFAULT_WRITE_DELAY",
     "RegisterAccess",
     "Settings",
@@ -39,6 +40,23 @@ DEFAULT_READ_RETRIES = 2
 
 DEFAULT_WRITE_DELAY = 0.1
 """秒。解锁与写、写与保存之间的间隔，与官方实现一致。"""
+
+DEFAULT_SAVE_DELAY = 0.5
+"""``save`` 之后等待 flash 写入完成的时间，秒。
+
+设备在执行 ``FF AA 00 00 00``（保存到 flash）期间会对部分寄存器回读出中间状态。
+真机实测（RAY-182，两台设备）：``save`` 之后立刻读 ``0x64`` 电量寄存器，4/4 读到
+0——而 0 是电压 ×100，物理上不可能。等 0.5 秒后 4/4 正常。逐轮测量恢复耗时为
+299/301/300/302/327 ms，分布极窄，像是一个固定的 flash 写入时长。
+
+**取 0.5 秒而不是 0.35 秒，是因为 0.5 秒是唯一被实测验证过的值**（对照实验里等
+0.5 秒的那组 4/4 通过），0.35 秒只是从上界推断出来的。测量值本身含一次寄存器读的
+往返，是恢复时间的**上界**而非其本身，贴着它取等于用推断替换实测。持久化写入不在
+热路径上，这半秒是一次性代价。
+
+只在 ``persist=True`` 时生效——不保存就不写 flash，也就没有这个窗口。重连后的配置
+重放走 ``persist=False``，因此不受影响。
+"""
 
 
 @dataclass
@@ -95,11 +113,13 @@ class RegisterAccess:
         read_timeout: float = DEFAULT_READ_TIMEOUT,
         read_retries: int = DEFAULT_READ_RETRIES,
         write_delay: float = DEFAULT_WRITE_DELAY,
+        save_delay: float = DEFAULT_SAVE_DELAY,
     ) -> None:
         self._device = device
         self.read_timeout = read_timeout
         self.read_retries = read_retries
         self.write_delay = write_delay
+        self.save_delay = save_delay
 
         # 按起始寄存器地址关联响应。同一地址可能有多个等待者（例如两处并发读
         # 同一个寄存器），一次响应把它们全部唤醒。
@@ -190,9 +210,14 @@ class RegisterAccess:
         persist: bool = True,
         remember: bool = True,
     ) -> None:
-        """原子地写一个寄存器：解锁 → 延时 → 写 → 延时 → 保存。
+        """原子地写一个寄存器：解锁 → 延时 → 写 → 延时 → 保存 → 等 flash 写完。
 
-        ``persist=False`` 跳过保存，配置只在本次上电期间有效。重连后的配置重放
+        最后那个等待不是保险起见：设备在 flash 写入期间对部分寄存器回读出中间
+        状态。真机实测 ``save`` 之后立刻读 ``0x64``，4/4 读到 0（见
+        :data:`DEFAULT_SAVE_DELAY`）。不等就返回，这个事务就不是原子的——调用方
+        拿到控制权时设备还在忙。
+
+        ``persist=False`` 跳过保存**与那个等待**，配置只在本次上电期间有效。重连后的配置重放
         走这条路径——模块保存过的配置本就还在，没必要为此再写一次 flash。
 
         ``remember=False`` 把这次写入排除在重连重放之外。**动作型寄存器必须用
@@ -207,6 +232,10 @@ class RegisterAccess:
             await asyncio.sleep(self.write_delay)
             if persist:
                 await self._device.write(commands.save())
+                # 等 flash 写完再交还控制权。这个 sleep 必须在事务锁**内**：
+                # 设备在 flash 写入期间会对寄存器回读出中间状态，若在锁外等，
+                # 并发的读就能挤进这个窗口，拿到一个看着正常却是中间态的值。
+                await asyncio.sleep(self.save_delay)
 
         if remember:
             self._remember(register, value)
