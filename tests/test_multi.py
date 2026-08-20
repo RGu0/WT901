@@ -140,6 +140,7 @@ async def test_merge_orders_by_t_host_not_by_arrival(clock: Clock) -> None:
     assert stream.stats.emitted == 4
     assert stream.stats.out_of_order == 0
     assert stream.stats.sources_finished == 2
+    assert stream.stats.emitted_while_stalled == 0
 
 
 async def test_merge_ends_when_every_source_ends(clock: Clock) -> None:
@@ -213,6 +214,93 @@ async def test_out_of_order_is_counted_not_hidden(clock: Clock) -> None:
     second = await asyncio.wait_for(anext(iterator), timeout=2.0)
 
     assert second.t_host == 1.0
+    assert stream.stats.out_of_order == 1
+    await iterator.aclose()
+    await left.close()
+    await right.close()
+
+
+# ----- 停滞流：等待预算属于样本，不属于流（RAY-190）------------------------
+
+
+@pytest.mark.parametrize("max_latency", [0.05, 0.2])
+async def test_a_silent_source_does_not_cap_the_survivors_throughput(
+    clock: Clock, max_latency: float
+) -> None:
+    """一条流不说话，另一条的产出不该因此有绝对上限。
+
+    缺陷版本里每发一个样本都要重新等一遍那条静默流，于是存活流被钉死在
+    ``1 / max_latency``——与设备速率无关。真机上双设备 200 Hz 关掉一台，存活那台
+    从 198.6 Hz 塌到 19.5 Hz，九成样本丢在设备队列里，而且不报错。
+
+    参数化不是为了覆盖率：**预算越大，缺陷版本越慢，而修好之后的耗时不随它线性
+    增长**。一条把 ``max_latency`` 写死的测试无法区分这两件事。
+    """
+    (left, _left_t), (right, right_t) = await _pair()
+    for index in range(50):
+        clock.now = 1.0 + index * 0.005          # 200 Hz
+        right_t.feed(data_frame())
+
+    stream = merge([left, right], max_latency=max_latency)
+    # 缺陷版本需要 50 × max_latency，这里只给 4 倍。
+    samples = await asyncio.wait_for(_drain(stream, 50), timeout=max_latency * 4)
+
+    assert [sample.device_id for sample in samples] == ["right-shank"] * 50
+    assert stream.stats.latency_flushes == 1     # 停滞判定一次，不是每个样本一次
+    assert stream.stats.emitted_while_stalled == 50
+    assert stream.stats.sources_finished == 0    # 停滞不是结束：重连仍在重试
+    await left.close()
+    await right.close()
+
+
+async def test_a_stalled_source_rejoins_when_it_speaks_again(clock: Clock) -> None:
+    """移出等待集是暂时的。它再开口就该回到归并里，否则修复就变成了永久放弃。"""
+    (left, left_t), (right, right_t) = await _pair()
+    clock.now = 1.0
+    right_t.feed(data_frame())
+    clock.now = 1.01
+    right_t.feed(data_frame())
+
+    stream = merge([left, right], max_latency=0.01)
+    iterator = stream.samples()
+
+    first = await asyncio.wait_for(anext(iterator), timeout=2.0)
+    second = await asyncio.wait_for(anext(iterator), timeout=2.0)
+    assert [first.t_host, second.t_host] == [1.0, 1.01]
+
+    clock.now = 2.0                              # 左腿恢复，且时刻更晚
+    left_t.feed(data_frame())
+    third = await asyncio.wait_for(anext(iterator), timeout=2.0)
+
+    assert third.device_id == "left-shank"
+    assert third.t_host == 2.0
+    assert stream.stats.out_of_order == 0        # 恢复得晚，没造成乱序
+    assert stream.stats.sources_finished == 0
+    await iterator.aclose()
+    await left.close()
+    await right.close()
+
+
+async def test_a_recovering_source_that_is_late_still_counts_as_out_of_order(
+    clock: Clock,
+) -> None:
+    """停滞流带着更早的时刻回来时，乱序仍要如实计入，不能被新路径吞掉。"""
+    (left, left_t), (right, right_t) = await _pair()
+    clock.now = 5.0
+    right_t.feed(data_frame())
+    clock.now = 5.01
+    right_t.feed(data_frame())
+
+    stream = merge([left, right], max_latency=0.01)
+    iterator = stream.samples()
+    await asyncio.wait_for(anext(iterator), timeout=2.0)
+    await asyncio.wait_for(anext(iterator), timeout=2.0)
+
+    clock.now = 1.0                              # 迟到，且时刻更早
+    left_t.feed(data_frame())
+    late = await asyncio.wait_for(anext(iterator), timeout=2.0)
+
+    assert late.t_host == 1.0
     assert stream.stats.out_of_order == 1
     await iterator.aclose()
     await left.close()
