@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from wt901.errors import TransportTimeoutError, UnsupportedRegisterError
 from wt901.protocol import commands
 from wt901.protocol.frames import RegisterResponse
-from wt901.protocol.registers import Bandwidth, Register, ReturnRate
+from wt901.protocol.registers import AlgorithmMode, Bandwidth, Register, ReturnRate
 
 if TYPE_CHECKING:
     from wt901.device import WT901Device
@@ -65,6 +65,7 @@ class Settings:
 
     output_rate: ReturnRate | int | None = None
     bandwidth: Bandwidth | int | None = None
+    algorithm: AlgorithmMode | int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,21 @@ def _coerce_return_rate(value: ReturnRate | int) -> ReturnRate:
             f"回传速率编码 0x{int(value):02X} 未在真机上核实。"
             f"当前已核实：{', '.join(f'{r.name}=0x{r.value:02X}' for r in ReturnRate)}。"
             "开放其余档位需先实测确认实际速率。"
+        ) from None
+
+
+def _coerce_algorithm_mode(value: AlgorithmMode | int) -> AlgorithmMode:
+    """把取值收敛到手册登记的两档。
+
+    只有 0 与 1 有文档定义。写入别的值不会报错，设备会静默进入未知状态——而
+    「姿态数据不对但连接正常」是最难定位的一类故障。宁可拒绝。
+    """
+    try:
+        return AlgorithmMode(value)
+    except ValueError:
+        raise UnsupportedRegisterError(
+            f"算法模式 0x{int(value):02X} 不在手册登记的取值内。"
+            f"当前已登记：{', '.join(f'{m.name}={m.value}' for m in AlgorithmMode)}。"
         ) from None
 
 
@@ -276,6 +292,19 @@ class RegisterAccess:
         await self.write(Register.BANDWIDTH, resolved)
         return resolved
 
+    async def set_algorithm(self, algorithm: AlgorithmMode | int) -> AlgorithmMode:
+        """设置姿态解算算法。
+
+        **这是配置，不是动作**：它会进 ``applied_writes`` 并在重连后被 ``replay()``
+        重新下发，和回传速率、带宽一样。设备重连后仍然是调用方要的那个模式。
+
+        注意它门控着「Z 轴角度归零」（``CALSW`` 写 ``0x0004``）——手册注明该操作
+        需先切到 :attr:`AlgorithmMode.SIX_AXIS` 才生效。
+        """
+        resolved = _coerce_algorithm_mode(algorithm)
+        await self.write(Register.ALGORITHM, resolved)
+        return resolved
+
     async def read_output_rate(self) -> int:
         """读回 ``RRATE`` 的原始编码。
 
@@ -288,6 +317,10 @@ class RegisterAccess:
     async def read_bandwidth(self) -> int:
         """读回 ``BANDWIDTH`` 的原始编码。理由同 :meth:`read_output_rate`。"""
         return await self.read_value(Register.BANDWIDTH)
+
+    async def read_algorithm(self) -> int:
+        """读回 ``ALGORITHM`` 的原始编码。理由同 :meth:`read_output_rate`。"""
+        return await self.read_value(Register.ALGORITHM)
 
     @asynccontextmanager
     async def settings(self) -> AsyncIterator[Settings]:
@@ -303,3 +336,5 @@ class RegisterAccess:
             await self.set_output_rate(pending.output_rate)
         if pending.bandwidth is not None:
             await self.set_bandwidth(pending.bandwidth)
+        if pending.algorithm is not None:
+            await self.set_algorithm(pending.algorithm)

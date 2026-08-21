@@ -19,6 +19,7 @@ from wt901.protocol.frames import (
 )
 from wt901.protocol.registers import (
     UNLOCK_KEY,
+    AlgorithmMode,
     Bandwidth,
     CalibrationMode,
     Register,
@@ -29,6 +30,7 @@ __all__ = [
     "FRAME_LENGTH",
     "HEADER",
     "UNLOCK_KEY",
+    "AlgorithmMode",
     "Bandwidth",
     "CalibrationMode",
     "Frame",

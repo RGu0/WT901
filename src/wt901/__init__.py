@@ -70,6 +70,7 @@ from wt901.models import (
 from wt901.multi import MergedStream, MergeStats, merge
 from wt901.protocol.frames import Frame, FrameDecoder, FrameFlag, RegisterResponse
 from wt901.protocol.registers import (
+    AlgorithmMode,
     Bandwidth,
     CalibrationMode,
     Register,
@@ -80,6 +81,7 @@ from wt901.transport.base import Transport
 from wt901.transport.ble import BleTransport
 
 __all__ = [
+    "AlgorithmMode",
     "Bandwidth",
     "Battery",
     "BleTransport",
