@@ -39,6 +39,13 @@ class Register(IntEnum):
     BANDWIDTH = 0x1F
     """传感器带宽，取值见 :class:`Bandwidth`。"""
 
+    ALGORITHM = 0x24
+    """姿态解算算法，取值见 :class:`AlgorithmMode`。
+
+    它还门控着 ``CALSW`` 的一部分行为：手册对「Z 轴角度归零」
+    （``FF AA 01 04 00``）注明**需先切到 6 轴算法才生效**。
+    """
+
     READADDR = 0x27
     """读寄存器指令的操作码（不是一个可读写的数据寄存器）。"""
 
@@ -92,6 +99,24 @@ MAG_START = Register.HX
 QUATERNION_START = Register.Q0
 SERIAL_NUMBER_START = Register.SERIAL_NUMBER
 SERIAL_NUMBER_WORDS = 6
+
+
+class AlgorithmMode(IntEnum):
+    """写入 :attr:`Register.ALGORITHM` 的姿态解算算法。
+
+    **编码与直觉相反**：值大的 ``1`` 对应的是「轴少」的那个。所以本库要求用具名
+    成员而不是裸 0/1——写反了设备不会报错，只会让航向从相对航向变成依赖磁力计的
+    绝对航向，在室内金属环境下悄悄劣化。这种错误在数据里看不出来。
+    """
+
+    NINE_AXIS = 0
+    """9 轴：绝对航向，融合磁力计。磁环境干净时航向不随时间漂移。"""
+
+    SIX_AXIS = 1
+    """6 轴：相对航向，不用磁力计。航向会缓慢漂移，但不受磁干扰影响。
+
+    「Z 轴角度归零」只在这个模式下生效。
+    """
 
 
 class CalibrationMode(IntEnum):
