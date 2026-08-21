@@ -53,7 +53,7 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 | 分组 | 名字 |
 |---|---|
 | 发现与连接 | `scan`、`DiscoveredDevice`、`WT901Device`、`ConnectionEvent`、`ConnectionState`、`ReconnectPolicy`、`DeviceStats`、`OutputMode` |
-| 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth` |
+| 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效） |
 | 遥测 | `Telemetry`（`device.telemetry`）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery` |
 | 校准 | `Calibration`（`device.calibration`）、`CalibrationMode` |
 | 多设备 | `merge`、`MergedStream`、`MergeStats` |

@@ -208,3 +208,10 @@ def test_algorithm_mode_is_exported_from_the_package_root() -> None:
 
     assert wt901.AlgorithmMode is AlgorithmMode
     assert "AlgorithmMode" in wt901.__all__
+
+
+def test_algorithm_mode_is_exported_from_the_public_protocol_namespace() -> None:
+    """公开协议命名空间应与同类枚举保持一致，供下游作类型标注。"""
+    from wt901.protocol import AlgorithmMode as public_algorithm_mode
+
+    assert public_algorithm_mode is AlgorithmMode

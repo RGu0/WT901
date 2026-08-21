@@ -17,6 +17,7 @@ __all__ = [
     "SERIAL_NUMBER_START",
     "SERIAL_NUMBER_WORDS",
     "UNLOCK_KEY",
+    "AlgorithmMode",
     "Bandwidth",
     "CalibrationMode",
     "Register",
