@@ -249,19 +249,26 @@ async def test_serial_number_spans_two_reads() -> None:
         Register.SERIAL_NUMBER + 3: (signed[3], signed[4], signed[5], 0),
     }
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
-    assert serial == "WT9011DCL123"
+    assert serial.value == "WT9011DCL123"  # type: ignore[attr-defined]
+    assert serial.raw == text  # type: ignore[attr-defined]
+    assert serial.is_plausible  # type: ignore[attr-defined]
     await device.close()
 
 
 async def test_serial_number_tolerates_garbage() -> None:
-    """读花了是诊断线索，不该让整个设备信息读取失败。"""
+    """读花了是诊断线索，不该让整个设备信息读取失败。
+
+    非 ASCII 字节以 \uFFFD 替换的行为在 RAY-293 里保持不变——它与「全零」是两回事：
+    掺了乱码说明读到了东西但链路上出了岔子，全零说明根本没读出内容。
+    """
     device, transport = await _opened()
     table = {
         Register.SERIAL_NUMBER: (-1, -1, -1, 0),
         Register.SERIAL_NUMBER + 3: (-1, -1, -1, 0),
     }
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
-    assert isinstance(serial, str)
+    assert isinstance(serial.value, str)  # type: ignore[attr-defined]
+    assert serial.is_plausible  # type: ignore[attr-defined]
     await device.close()
 
 
