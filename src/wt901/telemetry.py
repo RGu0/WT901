@@ -92,6 +92,11 @@ class SerialNumber:
 
     ``raw`` 始终给出，因为判定成因需要它：全零、部分可读、还是掺了非 ASCII 字节，
     指向的方向完全不同。
+
+    **刻意不提供** ``__str__``。给它一个「全零时返回空串」的实现，等于把本类要消除的
+    那个歧义原样搬进显示层——``f"SN: {serial}"`` 又会打出与「字段为空」一模一样的东西。
+    :class:`Battery` 同样没有 ``__str__``。要显示就显式取 ``value``，拿不准先看
+    ``is_plausible``。
     """
 
     raw: bytes
@@ -101,9 +106,6 @@ class SerialNumber:
     def is_plausible(self) -> bool:
         """这次读数是否可能是真实内容。"""
         return self.value is not None
-
-    def __str__(self) -> str:
-        return self.value if self.value is not None else ""
 
 
 @dataclass

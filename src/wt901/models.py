@@ -154,15 +154,16 @@ class DeviceInfo:
     temperature_c: float | None = None
     battery_percent: int | None = None
     battery_raw: int | None = None
+    mac: str | None = None
+    """设备自报的蓝牙地址 ``XX:XX:XX:XX:XX:XX``，见
+    :meth:`~wt901.telemetry.Telemetry.read_mac`。**唯一可跨主机持久化的身份。**
+
+    位置靠后只是因为**新字段一律追加在末尾**，不挪动既有字段的位置——它其实是这里
+    最该被拿来当身份的那个。
+    """
     serial_number_raw: bytes | None = None
     """序列号的原始 12 字节，见 :class:`~wt901.telemetry.SerialNumber`。
 
     与 ``battery_raw`` 的作用相同：区分「没读到」与「读到了但内容不可能」，并在
     后者发生时保留判定成因所需的字节。
-    """
-    mac: str | None = None
-    """设备自报的蓝牙地址 ``XX:XX:XX:XX:XX:XX``，见
-    :meth:`~wt901.telemetry.Telemetry.read_mac`。**唯一可跨主机持久化的身份。**
-
-    排在最后只是为了不挪动既有字段的位置——它是这里最该被拿来当身份的那个。
     """

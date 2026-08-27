@@ -239,7 +239,15 @@ def test_serial_number_is_exported_from_the_package_root() -> None:
     assert "SerialNumber" in wt901.__all__
 
 
-def test_str_gives_back_something_printable() -> None:
-    """``print(serial)`` 不该打出 dataclass 的 repr；全零时给空串而不是 ``None``。"""
-    assert str(SerialNumber(raw=b"AB", value="AB")) == "AB"
-    assert str(SerialNumber(raw=b"\x00" * 12, value=None)) == ""
+def test_no_str_shortcut_that_would_reintroduce_the_ambiguity() -> None:
+    """**刻意不提供** ``__str__``。
+
+    一个「全零时返回空串」的 ``__str__`` 会把本 Issue 要消除的歧义原样搬进显示层：
+    ``f"SN: {serial}"`` 又会打出与「字段为空」一模一样的东西。``Battery`` 同样没有。
+    默认的 dataclass repr 是诚实的——它把 ``value=None`` 明摆着写出来。
+    """
+    unreadable = SerialNumber(raw=b"\x00" * 12, value=None)
+
+    assert "__str__" not in SerialNumber.__dict__
+    assert str(unreadable) != ""
+    assert "value=None" in repr(unreadable)
