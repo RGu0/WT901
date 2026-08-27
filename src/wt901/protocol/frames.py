@@ -65,8 +65,14 @@ class Frame:
 class RegisterResponse:
     """``0x71`` 帧的解包结果。
 
-    一次读请求固定返回起始地址起的 4 个连续寄存器——这是协议决定的，不是可选
-    的。所以读 ``0x3A`` 一次拿到 HX/HY/HZ，读 ``0x51`` 一次拿到 Q0–Q3。
+    一次读请求固定返回起始地址起的 8 个连续寄存器——这是协议决定的，不是可选
+    的，见 :data:`~wt901.protocol.registers.REGISTERS_PER_RESPONSE`。所以读
+    ``0x3A`` 一次拿到 HX/HY/HZ，读 ``0x51`` 一次拿到 Q0–Q3，读 ``0x7F`` 一次
+    拿全 6 个序列号寄存器。
+
+    ``values`` 的长度就是 8，**调用方要自己截取关心的那几个**。多出来的寄存器是
+    真实数据而不是填充：读 ``0x2E`` 会顺带拿到芯片时间，读 ``0x3A`` 会顺带拿到
+    温度。别把它们当垃圾，也别假定它们有意义——那要看起始地址落在哪。
     """
 
     start_register: int
@@ -183,7 +189,11 @@ def decode_data_frame(frame: Frame) -> tuple[int, ...]:
 
 
 def decode_register_response(frame: Frame) -> RegisterResponse:
-    """解 ``0x71`` 帧，返回起始寄存器地址与其后 4 个寄存器的值。"""
+    """解 ``0x71`` 帧，返回起始寄存器地址与其后 8 个寄存器的值。
+
+    8 个寄存器正好用掉整个 18 字节负载（2 + 16），没有剩余字节——这也是「一帧
+    带 8 个而不是 4 个」最早的线索。
+    """
     if frame.flag is not FrameFlag.REGISTER:
         raise UnexpectedRegisterResponse(
             f"期望寄存器帧 0x{FrameFlag.REGISTER:02X}，实际收到 0x{frame.flag:02X}"

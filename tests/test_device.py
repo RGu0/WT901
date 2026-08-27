@@ -11,6 +11,7 @@ import struct
 
 import pytest
 
+from conftest import register_frame
 from wt901.device import (
     ConnectionEvent,
     ConnectionState,
@@ -19,7 +20,7 @@ from wt901.device import (
     WT901Device,
 )
 from wt901.errors import ConfigurationError, ConnectionLostError
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
+from wt901.protocol.frames import HEADER, FrameFlag
 from wt901.protocol.units import STANDARD_GRAVITY
 from wt901.transport.memory import MemoryTransport
 
@@ -29,15 +30,6 @@ MOTIONLESS = (0, 0, 2048, 0, 0, 0, 0, 0, 0)
 
 def data_frame(counts: tuple[int, ...] = MOTIONLESS) -> bytes:
     return bytes([HEADER, FrameFlag.DATA]) + struct.pack("<9h", *counts)
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 async def _opened(**kwargs: object) -> tuple[WT901Device, MemoryTransport]:
@@ -152,19 +144,20 @@ async def test_register_frames_reach_the_listener_and_are_counted() -> None:
     seen: list[object] = []
     device.on_register_response(seen.append)
 
-    transport.feed(data_frame() + register_frame(0x3A, (10, 20, 30, 40)))
+    values = (10, 20, 30, 40, 50, 60, 70, 80)
+    transport.feed(data_frame() + register_frame(0x3A, values))
     await _take(device, 1)
 
     assert len(seen) == 1
     assert seen[0].start_register == 0x3A  # type: ignore[attr-defined]
-    assert seen[0].values == (10, 20, 30, 40)  # type: ignore[attr-defined]
+    assert seen[0].values == values  # type: ignore[attr-defined]
     assert device.stats.register_frames == 1
     await device.close()
 
 
 async def test_register_frames_without_listener_are_not_an_error() -> None:
     device, transport = await _opened()
-    transport.feed(register_frame(0x51, (1, 2, 3, 4)))
+    transport.feed(register_frame(0x51, (1, 2, 3, 4, 5, 6, 7, 8)))
     assert device.stats.register_frames == 1
     await device.close()
 

@@ -49,7 +49,7 @@ def write_register(register: int, value: int) -> bytes:
 def read_register(register: int) -> bytes:
     """``FF AA 27 <reg> 00``。
 
-    设备会回一帧 ``0x55 0x71``，携带该地址起连续 4 个寄存器的值。
+    设备会回一帧 ``0x55 0x71``，携带该地址起连续 8 个寄存器的值。
     """
     if not 0x00 <= register <= 0xFF:
         raise ConfigurationError(f"寄存器地址越界：0x{register:X}")
