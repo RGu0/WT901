@@ -197,7 +197,12 @@ class Telemetry:
         return MagneticField(value=value, mag_type=self._mag_type, raw=tuple(raw))
 
     async def read_quaternion(self) -> Quaternion:
-        """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。"""
+        """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。
+
+        **归一化之前先看** :attr:`~wt901.models.Quaternion.is_plausible`：寄存器整块
+        回读全零时这里会交出 ``(0, 0, 0, 0)``，它的模是 0，不表示任何朝向，归一化会
+        得到 NaN 并一路飘进姿态解算。它为何附标志而不抛异常，写在该属性的文档里。
+        """
         response = await self._device.registers.read(Register.Q0)
         raw = response.values[:4]
         w, x, y, z = (units.quaternion_component(value) for value in raw)
@@ -223,6 +228,10 @@ class Telemetry:
 
         四个寄存器里前三个各自的高低字节承载两个字段，所以不能按「一个寄存器
         一个字段」来读。
+
+        **用之前先看** :attr:`ChipTime.is_plausible`：寄存器整块回读全零时这里会
+        交出 ``month = 0``、``day = 0``，那不是一个时间戳。它为何附标志而不抛异常，
+        写在该属性的文档里。
         """
         response = await self._device.registers.read(Register.CHIP_TIME_YEAR_MONTH)
         year_month, day_hour, minute_second, millisecond = (
