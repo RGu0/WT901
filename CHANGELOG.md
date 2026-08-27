@@ -21,6 +21,23 @@
 
 ### 新增
 
+* **`Mounting`、`Settings.mounting`、`RegisterAccess.set_mounting` / `read_mounting`**
+  —— 安装方向（寄存器 `0x23`）现在能具名表达，与 `set_output_rate` / `set_bandwidth` /
+  `set_algorithm` 同构。
+
+  此前只能走通用的 `write(0x23, 0)`。编码不像 `0x24` 那样反直觉（0 水平、1 垂直），
+  但**写错同样不报错**：装反了只是让姿态解算的重力轴对不上，数据一直偏，而链路、
+  速率、丢包这些可观测量全部正常（RAY-291）。
+
+  **即使写的是出厂默认值也不要省掉它。** 下游适配文档给的是七步下发序列，其中这一步
+  多半是幂等的——它的价值不在于改变什么，而在于让「一份配置快照完全决定设备状态」
+  成立。省掉它就等于依赖设备残留的配置，而模块会被别处用过、配置又固化在 flash。
+  这层理由写在 `Register.MOUNTING` 与 `set_mounting` 的文档里，并有测试钉住。
+
+  按**配置型**处理（`remember=True`），进 `applied_writes` 并被 `replay()` 重新下发，
+  与 `0x24` 同类。`settings()` 的下发顺序为 速率 → 带宽 → 算法 → 安装方向，与适配
+  文档 §3.1 一致并有测试钉住。
+
 * **`read_recording(path, *, tolerate_truncated_tail=False)` 与 `Recording.truncated`**
   —— 崩溃截断的录制文件不再整份不可读。
 

@@ -22,6 +22,7 @@ __all__ = [
     "AlgorithmMode",
     "Bandwidth",
     "CalibrationMode",
+    "Mounting",
     "Register",
     "ReturnRate",
 ]
@@ -41,6 +42,14 @@ class Register(IntEnum):
 
     BANDWIDTH = 0x1F
     """传感器带宽，取值见 :class:`Bandwidth`。"""
+
+    MOUNTING = 0x23
+    """安装方向，取值见 :class:`Mounting`。
+
+    出厂默认大概率就是 :attr:`Mounting.HORIZONTAL`（0），所以显式写它多半是幂等的。
+    **这不是省掉它的理由**：不写就等于依赖设备残留的配置，而模块会被别处用过、
+    配置又固化在 flash。要让「一份配置快照完全决定设备状态」成立，这一步必须写。
+    """
 
     ALGORITHM = 0x24
     """姿态解算算法，取值见 :class:`AlgorithmMode`。
@@ -135,6 +144,21 @@ class AlgorithmMode(IntEnum):
 
     「Z 轴角度归零」只在这个模式下生效。
     """
+
+
+class Mounting(IntEnum):
+    """写入 :attr:`Register.MOUNTING` 的安装方向。
+
+    编码不像 :class:`AlgorithmMode` 那样反直觉（0 水平、1 垂直），但**写错同样不会
+    报错**：装反了只是让姿态解算的重力轴对不上，数据一直偏，而链路、速率、丢包这些
+    可观测量全部正常。所以仍然要求具名。
+    """
+
+    HORIZONTAL = 0
+    """水平安装。出厂默认，也是多数下游要的那个。"""
+
+    VERTICAL = 1
+    """垂直安装。"""
 
 
 class CalibrationMode(IntEnum):

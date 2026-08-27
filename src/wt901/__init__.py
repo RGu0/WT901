@@ -73,6 +73,7 @@ from wt901.protocol.registers import (
     AlgorithmMode,
     Bandwidth,
     CalibrationMode,
+    Mounting,
     Register,
     ReturnRate,
 )
@@ -105,6 +106,7 @@ __all__ = [
     "MagneticField",
     "MergeStats",
     "MergedStream",
+    "Mounting",
     "OutputMode",
     "PollerConfig",
     "ProtocolError",
