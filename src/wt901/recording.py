@@ -25,7 +25,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,6 +63,17 @@ class Recording:
     created_utc: str
     note: str
     chunks: tuple[RecordedChunk, ...]
+    truncated: bool = False
+    """来源文件的最后一行是残行，已被丢弃——见
+    :func:`read_recording` 的 ``tolerate_truncated_tail``。
+
+    **它描述的是这次读取的来源文件，不是这份数据本身**，因此不进文件格式：把这份
+    录制写回文件得到的是一份完好的文件，再读回来 ``truncated`` 就是 ``False``。
+    ``write_recording`` 也不会保留它。
+
+    丢掉的是多少数据无从得知——残行本身就是坏的。能确定的只有「有东西没了」，
+    所以拿到 ``True`` 时应当把该次会话标记为不完整，而不是当作正常数据用。
+    """
 
     @property
     def duration(self) -> float:
@@ -172,13 +183,21 @@ def _parse_header(line: str) -> dict[str, Any]:
     return header
 
 
-def _parse_chunks(lines: Iterable[tuple[int, str]]) -> tuple[RecordedChunk, ...]:
+def _parse_chunks(
+    lines: Sequence[tuple[int, str]], *, tolerate_truncated_tail: bool
+) -> tuple[tuple[RecordedChunk, ...], bool]:
+    """解析数据行，返回 ``(chunks, 是否丢弃了截断的末行)``。"""
     chunks: list[RecordedChunk] = []
     previous = 0.0
-    for number, line in lines:
+    last = len(lines) - 1
+    for index, (number, line) in enumerate(lines):
         try:
             record = json.loads(line)
         except json.JSONDecodeError as error:
+            if tolerate_truncated_tail and index == last:
+                # 崩溃截断只可能留下这一种痕迹：写到一半的最后一行。丢掉它，
+                # 前面完好的部分照常返回。见 read_recording 的文档。
+                return tuple(chunks), True
             raise ValueError(f"录制文件第 {number} 行不是合法 JSON：{error}") from error
         if not isinstance(record, dict):
             raise ValueError(f"录制文件第 {number} 行必须是 JSON 对象")  # noqa: TRY004 - 文件内容非法属于 ValueError，不是调用方传错了类型
@@ -198,20 +217,47 @@ def _parse_chunks(lines: Iterable[tuple[int, str]]) -> tuple[RecordedChunk, ...]
             raise ValueError(f"录制文件第 {number} 行的时刻 {t} 早于上一行 {previous}")
         previous = t
         chunks.append(RecordedChunk(t=t, data=data))
-    return tuple(chunks)
+    return tuple(chunks), False
 
 
-def read_recording(path: Path) -> Recording:
-    """读取录制文件。格式不合法时抛 :class:`ValueError`，并指明行号。"""
+def read_recording(path: Path, *, tolerate_truncated_tail: bool = False) -> Recording:
+    """读取录制文件。格式不合法时抛 :class:`ValueError`，并指明行号。
+
+    ``tolerate_truncated_tail=True`` 时，**只有最后一行**的「写到一半」会被容忍：
+    丢掉那一行，返回此前全部完好的数据，并把 :attr:`Recording.truncated` 置为
+    ``True``。
+
+    **为什么需要它。** 进程被 ``kill -9``、掉电、或写到一半被打断时，文件的最后
+    一行必然是残行。严格解析会让此前**全部完好的数据一起变成不可读**——真机上
+    一份 30 分钟 200 Hz 的录制截断后，前 633 行完好，一行都取不出来（RAY-280）。
+    而采集轮次中途被打断是常态，不是例外。
+
+    **为什么默认仍然是严格的。** 静默容忍会把「这份文件坏了」变成一个没人注意到
+    的事实。要容忍就得明写出来，拿到结果还要看 ``truncated`` 才知道发生了什么。
+
+    **为什么只容忍最后一行、且只容忍 JSON 解析失败。** 中间行损坏说明文件被改过
+    或拼接过，那与崩溃无关，照旧拒绝并指明行号；时刻倒退的检查同样保留，末行也
+    不例外。而崩溃截断在这个格式下**只可能**表现为末行的 JSON 解析失败：数据行
+    形如 ``{"hex":"…","t":…}``，它的任何一个真前缀都不是合法 JSON（有测试钉住这
+    一点）。所以「末行 JSON 解析失败」既覆盖了全部截断情形，又不会顺带放过别的
+    损坏。截断恰好落在行边界时文件本身是完好的，不需要容忍，也不会报截断。
+
+    头部自身被截断不在容忍范围内：那种文件连「是不是 WT901 录制」都无从判断，
+    两种模式都拒绝。
+    """
     text = path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         raise ValueError("录制文件是空的")
     header = _parse_header(lines[0])
-    chunks = _parse_chunks(enumerate(lines[1:], start=2))
+    chunks, truncated = _parse_chunks(
+        list(enumerate(lines[1:], start=2)),
+        tolerate_truncated_tail=tolerate_truncated_tail,
+    )
     return Recording(
         device_id=str(header.get("device_id", "")),
         created_utc=str(header.get("created_utc", "")),
         note=str(header.get("note", "")),
         chunks=chunks,
+        truncated=truncated,
     )
