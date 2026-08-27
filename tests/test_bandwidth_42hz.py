@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from conftest import register_frame
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import UnsupportedRegisterError
 from wt901.protocol.registers import (
@@ -166,6 +166,6 @@ async def test_read_back_still_returns_the_raw_code() -> None:
     device, transport = await _opened()
     task = asyncio.get_running_loop().create_task(device.registers.read_bandwidth())
     await asyncio.sleep(0)
-    transport.feed(register_frame(Register.BANDWIDTH, (0x01, 0, 0, 0)))
+    transport.feed(register_frame(Register.BANDWIDTH, registers(0x01)))
     assert await task == 0x01
     await device.close()
