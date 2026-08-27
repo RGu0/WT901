@@ -20,7 +20,7 @@ from pathlib import Path
 from wt901.device import WT901Device
 from wt901.discovery import scan
 from wt901.protocol.registers import ReturnRate
-from wt901.recording import read_recording
+from wt901.recording import open_recording
 from wt901.transport.ble import BleTransport
 from wt901.transport.recording import RecordingTransport
 
@@ -59,14 +59,21 @@ async def main() -> int:
     finally:
         await device.close()
 
-    recording = read_recording(path)
-    print(
-        f"写入 {path}："
-        f"{len(recording.chunks)} 段 / {recording.total_bytes} 字节 / "
-        f"{recording.duration:.2f} 秒"
-    )
+    # 走流式入口而不是 read_recording：这里只要三个统计量，单趟扫描就够，
+    # 没有理由把整份文件读进内存。3 秒的基线无所谓，但同一段代码也会被用来
+    # 检查 smoke 跑出来的长录制（RAY-200 的压测文件单台约 14 MB）。
+    chunks = 0
+    total_bytes = 0
+    duration = 0.0
+    with open_recording(path) as reader:
+        for chunk in reader:
+            chunks += 1
+            total_bytes += len(chunk.data)
+            duration = chunk.t
+
+    print(f"写入 {path}：{chunks} 段 / {total_bytes} 字节 / {duration:.2f} 秒")
     print(f"设备统计：{device.stats}")
-    if not recording.chunks:
+    if not chunks:
         print("录制为空——设备没有推送任何数据。")
         return 1
     return 0

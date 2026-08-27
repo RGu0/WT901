@@ -21,6 +21,17 @@
 
 ### 修复
 
+* **`note` 里含 U+2028 / U+2029 时，录制文件读不回来。**
+
+  头部用 `ensure_ascii=False` 写出，这两个字符原样落进文件；而读取用
+  `str.splitlines()` 切行，它在这两个字符上断行，于是头部被劈成两半、后半段又被
+  当成数据行。JSON Lines 的行分隔符只有换行，`splitlines()` 认的那一串（`\r`、
+  `\x0b`、`\x0c`、`\x1c`–`\x1e`、`\x85`、U+2028、U+2029）比它宽。
+
+  改成按文件行读之后不会了。这是 `open_recording` 重构顺带修掉的，不是它的目标，
+  但同样有测试钉住（RAY-295）。
+
+
 * **一次 `0x71` 应答携带 8 个寄存器，本库此前按 4 个解，多出的一半被静默丢弃。**
 
   `RegisterResponse.values` 因此从 4 个元素变成 8 个。取前几个的调用方不受影响；
@@ -70,6 +81,32 @@
   局限记在 `docs/protocol.md` §6.2（RAY-298）。
 
 ### 新增
+
+* **`open_recording()` / `RecordingReader` / `RecordingHeader`** —— 录制文件的流式
+  读取入口，峰值内存与文件大小无关。
+
+  ```python
+  with open_recording(path) as reader:
+      print(reader.header.device_id)   # 头部在打开时就有，不必读完整份文件
+      for chunk in reader:             # 逐行产出
+          ...
+  ```
+
+  `read_recording` 的行为与签名不变，**并且现在建立在同一段解析代码之上**——两条
+  路径对末行截断与中间行损坏的判定因此不可能分叉，这是结构上的保证，不是靠测试
+  比对出来的。
+
+  `RecordingReader.truncated` 是 `bool | None`：**迭代完成之前是 `None`**。流式读取
+  在读到文件尾之前无从知道末行完不完整，给 `False` 就是把「还不知道」说成「没截断」
+  ——与 `SerialNumber.value`、`ChipTime.is_plausible` 同一条线。整份读完之后构造出来
+  的 `Recording.truncated` 仍然是 `bool`。
+
+  **不是尾随读取**：它读的是一份已经写完的文件。跟着写入方一起读涉及「读到一半的行
+  下次要重读」这类语义，本入口不提供。
+
+  `tools/record_session.py` 已改用它——那里只需要段数、字节数与时长三个统计量，单趟
+  扫描就够（RAY-295）。
+
 
 * **`Bandwidth.HZ_42`（`0x1F` = `0x03`）。**
 
