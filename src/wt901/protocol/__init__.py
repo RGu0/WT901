@@ -22,6 +22,7 @@ from wt901.protocol.registers import (
     AlgorithmMode,
     Bandwidth,
     CalibrationMode,
+    Mounting,
     Register,
     ReturnRate,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "Frame",
     "FrameDecoder",
     "FrameFlag",
+    "Mounting",
     "Register",
     "RegisterResponse",
     "ReturnRate",

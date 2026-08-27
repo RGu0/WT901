@@ -20,7 +20,13 @@ from typing import TYPE_CHECKING
 from wt901.errors import TransportTimeoutError, UnsupportedRegisterError
 from wt901.protocol import commands
 from wt901.protocol.frames import RegisterResponse
-from wt901.protocol.registers import AlgorithmMode, Bandwidth, Register, ReturnRate
+from wt901.protocol.registers import (
+    AlgorithmMode,
+    Bandwidth,
+    Mounting,
+    Register,
+    ReturnRate,
+)
 
 if TYPE_CHECKING:
     from wt901.device import WT901Device
@@ -66,6 +72,7 @@ class Settings:
     output_rate: ReturnRate | int | None = None
     bandwidth: Bandwidth | int | None = None
     algorithm: AlgorithmMode | int | None = None
+    mounting: Mounting | int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +110,17 @@ def _coerce_algorithm_mode(value: AlgorithmMode | int) -> AlgorithmMode:
         raise UnsupportedRegisterError(
             f"算法模式 0x{int(value):02X} 不在手册登记的取值内。"
             f"当前已登记：{', '.join(f'{m.name}={m.value}' for m in AlgorithmMode)}。"
+        ) from None
+
+
+def _coerce_mounting(value: Mounting | int) -> Mounting:
+    """把取值收敛到手册登记的两档。理由同 :func:`_coerce_algorithm_mode`。"""
+    try:
+        return Mounting(value)
+    except ValueError:
+        raise UnsupportedRegisterError(
+            f"安装方向 0x{int(value):02X} 不在手册登记的取值内。"
+            f"当前已登记：{', '.join(f'{m.name}={m.value}' for m in Mounting)}。"
         ) from None
 
 
@@ -305,6 +323,21 @@ class RegisterAccess:
         await self.write(Register.ALGORITHM, resolved)
         return resolved
 
+    async def set_mounting(self, mounting: Mounting | int) -> Mounting:
+        """设置安装方向。
+
+        **这是配置，不是动作**：与速率、带宽、算法模式一样进 ``applied_writes``，
+        重连后由 ``replay()`` 重新下发。
+
+        **即使这次写入可能是幂等的也不要省掉它。** 0（水平）是不是出厂默认，本库
+        没有核实过；而无论是不是，省掉它都等于依赖设备残留的配置——模块会被别处用过，
+        配置又固化在 flash。它存在的意义是让「一份配置快照完全决定设备状态」成立，
+        不是为了改变什么。
+        """
+        resolved = _coerce_mounting(mounting)
+        await self.write(Register.MOUNTING, resolved)
+        return resolved
+
     async def read_output_rate(self) -> int:
         """读回 ``RRATE`` 的原始编码。
 
@@ -322,6 +355,10 @@ class RegisterAccess:
         """读回 ``ALGORITHM`` 的原始编码。理由同 :meth:`read_output_rate`。"""
         return await self.read_value(Register.ALGORITHM)
 
+    async def read_mounting(self) -> int:
+        """读回 ``MOUNTING`` 的原始编码。理由同 :meth:`read_output_rate`。"""
+        return await self.read_value(Register.MOUNTING)
+
     @asynccontextmanager
     async def settings(self) -> AsyncIterator[Settings]:
         """批量配置。退出 ``async with`` 时统一下发。
@@ -338,3 +375,5 @@ class RegisterAccess:
             await self.set_bandwidth(pending.bandwidth)
         if pending.algorithm is not None:
             await self.set_algorithm(pending.algorithm)
+        if pending.mounting is not None:
+            await self.set_mounting(pending.mounting)
