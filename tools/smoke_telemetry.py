@@ -72,13 +72,11 @@ async def main() -> int:
         # 首轮真机读到序列号为空字符串——那可能是设备本身没写序列号，也可能是
         # 我们的解析把它丢了。光看解析结果分不清这两种情况，所以把原始值也打出来：
         # 全零说明是设备侧为空，非零说明是解析的问题。
-        serial_low = await device.registers.read(Register.SERIAL_NUMBER)
-        serial_high = await device.registers.read(Register.SERIAL_NUMBER + 3)
+        serial_raw = await device.registers.read(Register.SERIAL_NUMBER)
         version_raw = await device.registers.read(Register.VERSION_LOW)
         print(
             "  ── 原始寄存器（用于区分「设备为空」与「解析出错」）"
-            f"\n     0x7F..0x82 = {[f'0x{v & 0xFFFF:04X}' for v in serial_low.values]}"
-            f"\n     0x82..0x85 = {[f'0x{v & 0xFFFF:04X}' for v in serial_high.values]}"
+            f"\n     0x7F..0x86 = {[f'0x{v & 0xFFFF:04X}' for v in serial_raw.values]}"
             f"\n     0x2E/0x2F  = 0x{version_raw.values[0] & 0xFFFF:04X}"
             f" 0x{version_raw.values[1] & 0xFFFF:04X}"
             f"  → uint32 0x{(version_raw.values[0] & 0xFFFF) | ((version_raw.values[1] & 0xFFFF) << 16):08X}"

@@ -223,7 +223,7 @@ class RegisterAccess:
         raise last_error
 
     async def read_value(self, register: int) -> int:
-        """读单个寄存器的值。内部仍是一次 4 寄存器的读。"""
+        """读单个寄存器的值。内部仍是一次 8 寄存器的读，其余 7 个被丢弃。"""
         response = await self.read(register)
         return response.value_at(register)
 
