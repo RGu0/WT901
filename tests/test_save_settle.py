@@ -10,25 +10,15 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
+from conftest import register_frame
 from wt901.device import WT901Device
 from wt901.protocol.commands import save
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import Register, ReturnRate
 from wt901.transport.memory import MemoryTransport
 
 SETTLE = 0.05
 """测试里用的 flash 等待，取一个能测但不拖慢套件的值。"""
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -84,7 +74,7 @@ async def test_the_settle_is_inside_the_transaction_lock() -> None:
         # 读指令一旦发出就作答，这样读的耗时里不含等待响应的时间。
         while True:
             if any(w.startswith(b"\xff\xaa\x27") for w in transport.writes):
-                transport.feed(register_frame(Register.POWER, (400, 0, 0, 0)))
+                transport.feed(register_frame(Register.POWER, (400,) + (0,) * 7))
                 return
             await asyncio.sleep(0)
 

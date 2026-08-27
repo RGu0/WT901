@@ -20,28 +20,19 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import UnexpectedRegisterResponse
 from wt901.models import Quaternion
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import Register
 from wt901.telemetry import ChipTime
 from wt901.transport.memory import MemoryTransport
 
-ZERO = (0, 0, 0, 0)
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
+ZERO = registers()
+"""整帧读作 0——这正是本文件要覆盖的那个真机现象。"""
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -118,7 +109,9 @@ async def test_implausible_chip_time_does_not_print_like_a_timestamp() -> None:
 async def test_a_real_chip_time_is_plausible_and_prints_normally() -> None:
     device, transport = await _opened()
     table = {
-        Register.CHIP_TIME_YEAR_MONTH: (26 | (8 << 8), 18 | (13 << 8), 45 | (7 << 8), 123)
+        Register.CHIP_TIME_YEAR_MONTH: registers(
+            26 | (8 << 8), 18 | (13 << 8), 45 | (7 << 8), 123
+        )
     }
     chip = await _run(device, transport, table, device.telemetry.read_chip_time())
 
@@ -161,7 +154,7 @@ async def test_a_real_quaternion_is_plausible() -> None:
     quat = await _run(
         device,
         transport,
-        {Register.Q0: (32767, 0, 0, 0)},
+        {Register.Q0: registers(32767)},
         device.telemetry.read_quaternion(),
     )
 
@@ -204,7 +197,7 @@ async def test_device_info_version_is_none_when_registers_read_zero() -> None:
     info = await _run(
         device,
         transport,
-        {Register.TEMPERATURE: (3184, 0, 0, 0)},
+        {Register.TEMPERATURE: registers(3184)},
         device.telemetry.read_device_info(),
     )
 
@@ -219,7 +212,7 @@ async def test_a_real_version_still_reads() -> None:
     version = await _run(
         device,
         transport,
-        {Register.VERSION_LOW: (0x0116, -0x7628, 0, 0)},  # 0x89D8 作 int16
+        {Register.VERSION_LOW: registers(0x0116, -0x7628)},  # 0x89D8 作 int16
         device.telemetry.read_version(),
     )
 

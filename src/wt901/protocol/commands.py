@@ -49,7 +49,7 @@ def write_register(register: int, value: int) -> bytes:
 def read_register(register: int) -> bytes:
     """``FF AA 27 <reg> 00``。
 
-    设备会回一帧 ``0x55 0x71``，携带该地址起连续 4 个寄存器的值。
+    设备会回一帧 ``0x55 0x71``，携带该地址起连续 8 个寄存器的值。
     """
     if not 0x00 <= register <= 0xFF:
         raise ConfigurationError(f"寄存器地址越界：0x{register:X}")
@@ -72,7 +72,10 @@ def set_return_rate(rate: ReturnRate) -> bytes:
 
 
 def set_bandwidth(bandwidth: Bandwidth) -> bytes:
-    """设置传感器带宽。取值被限定在已核实的档位，见 :class:`Bandwidth`。"""
+    """设置抗混叠带宽。取值被限定在已登记的档位，见 :class:`Bandwidth`。
+
+    「已登记」不等于「已核实」：三档的标称频率本库都没实测过，见 :class:`Bandwidth`。
+    """
     return write_register(Register.BANDWIDTH, bandwidth)
 
 

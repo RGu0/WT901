@@ -156,22 +156,30 @@ def test_negative_counts_are_signed() -> None:
 
 
 def test_register_response_decoding() -> None:
+    """一帧带 8 个寄存器，后 4 个同样要解出来——真机上它们是真实数据。
+
+    每个位置给一个互不相同的值：若解码器少读了、或某个位置串了位，断言会指出是
+    哪一个，而不是笼统地「不相等」。
+    """
     decoder = FrameDecoder()
-    frames = decoder.feed(register_frame(0x3A, (10, -20, 30, 40)))
+    values = (10, -20, 30, 40, -50, 60, -70, 80)
+    frames = decoder.feed(register_frame(0x3A, values))
     response = decode_register_response(frames[0])
     assert response.start_register == 0x3A
-    assert response.values == (10, -20, 30, 40)
+    assert response.values == values
     assert response.value_at(0x3A) == 10
     assert response.value_at(0x3C) == 30
+    # 0x41 落在原先被丢弃的后半段里。
+    assert response.value_at(0x41) == 80
 
 
 def test_register_response_rejects_out_of_range_address() -> None:
     """越界时抛异常，而不是悄悄返回相邻寄存器的值。"""
     decoder = FrameDecoder()
-    frames = decoder.feed(register_frame(0x3A, (1, 2, 3, 4)))
+    frames = decoder.feed(register_frame(0x3A, (1, 2, 3, 4, 5, 6, 7, 8)))
     response = decode_register_response(frames[0])
     with pytest.raises(UnexpectedRegisterResponse):
-        response.value_at(0x3E)
+        response.value_at(0x42)  # 起始地址 + 8，刚好越界
     with pytest.raises(UnexpectedRegisterResponse):
         response.value_at(0x39)
 
@@ -179,7 +187,7 @@ def test_register_response_rejects_out_of_range_address() -> None:
 def test_decoders_reject_wrong_flag() -> None:
     decoder = FrameDecoder()
     data, register = decoder.feed(
-        data_frame(COUNTS) + register_frame(0x51, (1, 2, 3, 4))
+        data_frame(COUNTS) + register_frame(0x51, (1, 2, 3, 4, 5, 6, 7, 8))
     )
     with pytest.raises(UnexpectedRegisterResponse):
         decode_register_response(data)
@@ -191,7 +199,9 @@ def test_data_and_register_frames_interleave() -> None:
     """寄存器回读与实时数据流共用一条链路，必须能混在一起解。"""
     decoder = FrameDecoder()
     frames = decoder.feed(
-        data_frame(COUNTS) + register_frame(0x51, (1, 2, 3, 4)) + data_frame(COUNTS)
+        data_frame(COUNTS)
+        + register_frame(0x51, (1, 2, 3, 4, 5, 6, 7, 8))
+        + data_frame(COUNTS)
     )
     assert [frame.flag for frame in frames] == [
         FrameFlag.DATA,

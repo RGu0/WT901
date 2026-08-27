@@ -1,7 +1,7 @@
 """寄存器读写事务与输出配置。
 
 读寄存器不是「发了就有」：它是请求/响应事务。发出 ``FF AA 27 <reg> 00`` 后设备
-回一帧 ``0x55 0x71``，其中携带**起始地址起连续 4 个寄存器**的值。这些回帧与
+回一帧 ``0x55 0x71``，其中携带**起始地址起连续 8 个寄存器**的值。这些回帧与
 ``0x61`` 实时数据流混在同一条链路上到达，所以必须按地址把响应关联回请求，而不是
 官方示例那样 sleep 一段时间再去翻缓存。
 
@@ -125,12 +125,21 @@ def _coerce_mounting(value: Mounting | int) -> Mounting:
 
 
 def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
+    """把取值收敛到已登记的档位，其余一律拒绝。
+
+    措辞与 :func:`_coerce_return_rate` 的「未核实」**有意不同**：速率的每一档都在
+    真机上量过，带宽一档都没有（见 :class:`Bandwidth`）。这里拒绝的理由因此只有
+    一条——防止**误**写一个没人看过的编码让设备进入未知状态，而那种故障在现场表现
+    为「数据不对但连接正常」。这条理由与证据强度无关，所以拒绝照旧；但不能借它
+    宣称被放行的那三档已经核实过。
+    """
     try:
         return Bandwidth(value)
     except ValueError:
         raise UnsupportedRegisterError(
-            f"带宽编码 0x{int(value):02X} 未在真机上核实。"
-            f"当前已核实：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}。"
+            f"带宽编码 0x{int(value):02X} 未登记。"
+            f"当前登记：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}"
+            "（标称值来自维特通用编码表，本库未实测，见 Bandwidth 文档）。"
         ) from None
 
 
@@ -192,10 +201,14 @@ class RegisterAccess:
     # ----- 读 -------------------------------------------------------------
 
     async def read(self, register: int) -> RegisterResponse:
-        """读寄存器，返回**该地址起连续 4 个**寄存器的值。
+        """读寄存器，返回**该地址起连续 8 个**寄存器的值。
 
-        这不是接口设计的选择，是协议决定的：一次回帧固定携带 4 个寄存器。所以
-        读 ``0x3A`` 一次拿到 HX/HY/HZ，读 ``0x51`` 一次拿到 Q0–Q3。
+        这不是接口设计的选择，是协议决定的：一次回帧固定携带 8 个寄存器，见
+        :data:`~wt901.protocol.registers.REGISTERS_PER_RESPONSE`。所以读 ``0x3A``
+        一次拿到 HX/HY/HZ，读 ``0x51`` 一次拿到 Q0–Q3，读 ``0x7F`` 一次拿全序列号。
+
+        **调用方要自己截取关心的那几个。** 多出来的寄存器是真实数据而不是填充，
+        但它们是什么取决于起始地址落在哪——本方法不替调用方猜。
         """
         command = commands.read_register(register)
         last_error: TransportTimeoutError | None = None
@@ -219,7 +232,7 @@ class RegisterAccess:
         raise last_error
 
     async def read_value(self, register: int) -> int:
-        """读单个寄存器的值。内部仍是一次 4 寄存器的读。"""
+        """读单个寄存器的值。内部仍是一次 8 寄存器的读，其余 7 个被丢弃。"""
         response = await self.read(register)
         return response.value_at(register)
 
@@ -305,7 +318,13 @@ class RegisterAccess:
         return resolved
 
     async def set_bandwidth(self, bandwidth: Bandwidth | int) -> Bandwidth:
-        """设置传感器带宽。"""
+        """设置抗混叠滤波器带宽。
+
+        **档位的标称频率未经本库实测**，见 :class:`~wt901.protocol.registers.Bandwidth`。
+        采样定理要求带宽不超过回传速率的一半，但本库不替调用方检查这件事：两个数
+        谁也不是被核实过的量纲，用一个没核实的数去校验另一个没核实的数，只会给出
+        一种虚假的安全感。
+        """
         resolved = _coerce_bandwidth(bandwidth)
         await self.write(Register.BANDWIDTH, resolved)
         return resolved

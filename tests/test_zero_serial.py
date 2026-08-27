@@ -14,27 +14,17 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import Register
 from wt901.telemetry import SerialNumber
 from wt901.transport.memory import MemoryTransport
 
-ZERO_WORDS = (0, 0, 0, 0)
-"""真机回读：`0x7F` 与 `0x82` 两次都是全零。"""
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
+ZERO_WORDS = registers()
+"""真机回读：`0x7F` 起整帧 18 字节全为 0。"""
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -87,10 +77,7 @@ async def _run(
 def _text_table(text: bytes) -> dict[int, tuple[int, ...]]:
     words = [int.from_bytes(text[i : i + 2], "little") for i in range(0, 12, 2)]
     signed = [w - 0x10000 if w > 0x7FFF else w for w in words]
-    return {
-        Register.SERIAL_NUMBER: (signed[0], signed[1], signed[2], 0),
-        Register.SERIAL_NUMBER + 3: (signed[3], signed[4], signed[5], 0),
-    }
+    return {Register.SERIAL_NUMBER: registers(*signed)}
 
 
 # ----- 验收标准 1：全零不再变成空字符串 --------------------------------------
@@ -99,7 +86,7 @@ def _text_table(text: bytes) -> dict[int, tuple[int, ...]]:
 async def test_all_zero_yields_no_value_but_keeps_raw() -> None:
     """12 个字节全是 0 不是一个空序列号，是一次读不出内容的读取。"""
     device, transport = await _opened()
-    table = {Register.SERIAL_NUMBER: ZERO_WORDS, Register.SERIAL_NUMBER + 3: ZERO_WORDS}
+    table = {Register.SERIAL_NUMBER: ZERO_WORDS}
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
 
     assert serial.value is None  # type: ignore[attr-defined]
@@ -147,10 +134,7 @@ async def test_a_single_non_zero_byte_is_enough_to_count_as_content() -> None:
 async def test_non_ascii_is_still_replaced_not_refused() -> None:
     """掺乱码与全零是两回事：前者读到了东西，后者根本没读出内容。"""
     device, transport = await _opened()
-    table = {
-        Register.SERIAL_NUMBER: (-1, -1, -1, 0),
-        Register.SERIAL_NUMBER + 3: (-1, -1, -1, 0),
-    }
+    table = {Register.SERIAL_NUMBER: registers(-1, -1, -1, -1, -1, -1)}
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
 
     assert serial.value is not None  # type: ignore[attr-defined]
@@ -168,7 +152,7 @@ async def test_device_info_distinguishes_unread_from_read_but_empty() -> None:
     与 ``battery_percent`` / ``battery_raw`` 的关系完全一致（RAY-182）。
     """
     device, transport = await _opened()
-    table = {Register.SERIAL_NUMBER: ZERO_WORDS, Register.SERIAL_NUMBER + 3: ZERO_WORDS}
+    table = {Register.SERIAL_NUMBER: ZERO_WORDS}
     info = await _run(device, transport, table, device.telemetry.read_device_info())
 
     assert info.serial_number is None  # type: ignore[attr-defined]
@@ -182,7 +166,7 @@ async def test_device_info_unread_serial_leaves_both_fields_none() -> None:
     info = await _run(
         device,
         transport,
-        {Register.TEMPERATURE: (3184, 0, 0, 0)},
+        {Register.TEMPERATURE: registers(3184)},
         device.telemetry.read_device_info(),
     )
 
@@ -210,6 +194,9 @@ async def test_device_info_reads_the_serial_only_once() -> None:
     """``value`` 与 ``raw`` 必须来自同一次读取，否则白花一次 BLE 往返。
 
     与电量同一条理由——那条在 ``read_device_info`` 的文档里写着。
+
+    RAY-292 之后 ``0x82`` 那一趟也没了：一帧回 8 个寄存器，6 个序列号寄存器一趟就
+    读全。这里连 ``0x82`` **一次都不该出现**——出现了就是退回了两趟读法。
     """
     device, transport = await _opened()
     await _run(
@@ -225,7 +212,7 @@ async def test_device_info_reads_the_serial_only_once() -> None:
         if len(w) == 5 and w[2] == Register.READADDR
     ]
     assert reads.count(Register.SERIAL_NUMBER) == 1
-    assert reads.count(Register.SERIAL_NUMBER + 3) == 1
+    assert reads.count(Register.SERIAL_NUMBER + 3) == 0
     await device.close()
 
 

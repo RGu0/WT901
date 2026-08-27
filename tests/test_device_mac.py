@@ -146,7 +146,7 @@ async def test_two_devices_get_different_macs() -> None:
 
 
 async def test_read_mac_issues_one_read_at_0x66() -> None:
-    """MAC 占 3 个寄存器，一次读取（回 4 个）就够，不该像序列号那样读两次。"""
+    """MAC 占 3 个寄存器，一次读取（回 8 个）就够。"""
     device, transport = await _opened()
     await _run(device, transport, {Register.MAC: BLE67_A}, device.telemetry.read_mac())
 

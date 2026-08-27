@@ -3,25 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import TransportTimeoutError
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import Register
 from wt901.telemetry import PollerConfig, TelemetryPoller
 from wt901.transport.memory import MemoryTransport
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -86,8 +76,8 @@ async def test_magnetic_field_reads_type_first_then_converts() -> None:
     """磁场换算系数不是常量，必须先取 0x72 的量纲类型。"""
     device, transport = await _opened()
     table = {
-        Register.MAGTYPE: (2, 0, 0, 0),  # type 2 → ×0.15
-        Register.HX: (100, 200, 300, 0),
+        Register.MAGTYPE: registers(2, 0, 0, 0),  # type 2 → ×0.15
+        Register.HX: registers(100, 200, 300, 0),
     }
     field = await _run(device, transport, table, device.telemetry.read_magnetic_field())
 
@@ -102,7 +92,7 @@ async def test_magnetic_field_reads_type_first_then_converts() -> None:
 async def test_magnetic_field_type_is_cached() -> None:
     """量纲类型描述硬件配置，不会在运行中变化，没必要每次都读。"""
     device, transport = await _opened()
-    table = {Register.MAGTYPE: (6, 0, 0, 0), Register.HX: (150, 0, 0, 0)}
+    table = {Register.MAGTYPE: registers(6, 0, 0, 0), Register.HX: registers(150, 0, 0, 0)}
     await _run(device, transport, table, device.telemetry.read_magnetic_field())
     transport.writes.clear()
     await _run(device, transport, table, device.telemetry.read_magnetic_field())
@@ -118,7 +108,7 @@ async def test_magnetic_field_type_is_cached() -> None:
 async def test_unknown_magnetic_type_yields_no_unit() -> None:
     """未知量纲不猜系数：返回值明确标注单位不可用，只有 raw 能看。"""
     device, transport = await _opened()
-    table = {Register.MAGTYPE: (99, 0, 0, 0), Register.HX: (100, 200, 300, 0)}
+    table = {Register.MAGTYPE: registers(99, 0, 0, 0), Register.HX: registers(100, 200, 300, 0)}
     field = await _run(device, transport, table, device.telemetry.read_magnetic_field())
 
     assert field.value is None  # type: ignore[attr-defined]
@@ -132,7 +122,7 @@ async def test_unknown_magnetic_type_yields_no_unit() -> None:
 
 async def test_quaternion() -> None:
     device, transport = await _opened()
-    table = {Register.Q0: (32767, -32768, 16384, 0)}
+    table = {Register.Q0: registers(32767, -32768, 16384, 0)}
     quat = await _run(device, transport, table, device.telemetry.read_quaternion())
 
     assert quat.w == pytest.approx(1.0, rel=1e-4)  # type: ignore[attr-defined]
@@ -143,7 +133,7 @@ async def test_quaternion() -> None:
 
 async def test_temperature() -> None:
     device, transport = await _opened()
-    table = {Register.TEMPERATURE: (3184, 0, 0, 0)}
+    table = {Register.TEMPERATURE: registers(3184, 0, 0, 0)}
     value = await _run(device, transport, table, device.telemetry.read_temperature())
     assert value == pytest.approx(31.84)
     await device.close()
@@ -153,7 +143,7 @@ async def test_temperature() -> None:
 async def test_battery_returns_raw_and_percent(raw: int, percent: int) -> None:
     """阶梯很粗（350–367 全报 10%），需要更细判断时只能看原始值。"""
     device, transport = await _opened()
-    table = {Register.POWER: (raw, 0, 0, 0)}
+    table = {Register.POWER: registers(raw, 0, 0, 0)}
     battery = await _run(device, transport, table, device.telemetry.read_battery())
     assert battery.raw == raw  # type: ignore[attr-defined]
     assert battery.percent == percent  # type: ignore[attr-defined]
@@ -168,7 +158,7 @@ async def test_battery_zero_raw_is_reported_as_unknown_not_as_empty() -> None:
     的理由。
     """
     device, transport = await _opened()
-    table = {Register.POWER: (0, 0, 0, 0)}
+    table = {Register.POWER: registers(0, 0, 0, 0)}
     battery = await _run(device, transport, table, device.telemetry.read_battery())
 
     assert battery.raw == 0  # type: ignore[attr-defined]
@@ -185,7 +175,7 @@ async def test_device_info_distinguishes_unread_battery_from_implausible_one() -
     的值」在调用方看来一模一样，而这两件事要查的方向完全不同。
     """
     device, transport = await _opened()
-    table = {Register.POWER: (0, 0, 0, 0)}
+    table = {Register.POWER: registers(0, 0, 0, 0)}
     info = await _run(device, transport, table, device.telemetry.read_device_info())
 
     assert info.battery_raw == 0  # type: ignore[attr-defined]
@@ -204,7 +194,7 @@ async def test_chip_time_splits_high_and_low_bytes() -> None:
     day_hour = 18 | (13 << 8)
     minute_second = 45 | (7 << 8)
     table = {
-        Register.CHIP_TIME_YEAR_MONTH: (year_month, day_hour, minute_second, 123)
+        Register.CHIP_TIME_YEAR_MONTH: registers(year_month, day_hour, minute_second, 123)
     }
     chip = await _run(device, transport, table, device.telemetry.read_chip_time())
 
@@ -222,7 +212,7 @@ async def test_chip_time_handles_high_bit_bytes() -> None:
     day_hour = 31 | (23 << 8)
     minute_second = 59 | (59 << 8)
     table = {
-        Register.CHIP_TIME_YEAR_MONTH: (
+        Register.CHIP_TIME_YEAR_MONTH: registers(
             year_month - 0x10000 if year_month > 0x7FFF else year_month,
             day_hour,
             minute_second,
@@ -238,20 +228,24 @@ async def test_chip_time_handles_high_bit_bytes() -> None:
 # ----- 序列号 / 版本号 -----------------------------------------------------
 
 
-async def test_serial_number_spans_two_reads() -> None:
-    """序列号占 6 个寄存器，而一次读只回 4 个，所以必须读两次。"""
+async def test_serial_number_comes_from_one_read() -> None:
+    """序列号占 6 个寄存器，一帧回 8 个，所以一趟就够（RAY-292）。
+
+    顺带钉住「只发了一条读指令」：改回两趟不会让返回值出错，只会白跑一趟 BLE
+    往返，而寄存器读与 0x61 实时流抢同一条链路。只断言字符串，退化就测不出来。
+    """
     device, transport = await _opened()
     text = b"WT9011DCL123"
     words = [int.from_bytes(text[i : i + 2], "little") for i in range(0, 12, 2)]
     signed = [w - 0x10000 if w > 0x7FFF else w for w in words]
-    table = {
-        Register.SERIAL_NUMBER: (signed[0], signed[1], signed[2], 0),
-        Register.SERIAL_NUMBER + 3: (signed[3], signed[4], signed[5], 0),
-    }
+    table = {Register.SERIAL_NUMBER: registers(*signed)}
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
     assert serial.value == "WT9011DCL123"  # type: ignore[attr-defined]
     assert serial.raw == text  # type: ignore[attr-defined]
     assert serial.is_plausible  # type: ignore[attr-defined]
+
+    reads = [w for w in transport.writes if len(w) == 5 and w[2] == Register.READADDR]
+    assert reads == [bytes.fromhex(f"ffaa27{Register.SERIAL_NUMBER:02x}00")]
     await device.close()
 
 
@@ -262,10 +256,7 @@ async def test_serial_number_tolerates_garbage() -> None:
     掺了乱码说明读到了东西但链路上出了岔子，全零说明根本没读出内容。
     """
     device, transport = await _opened()
-    table = {
-        Register.SERIAL_NUMBER: (-1, -1, -1, 0),
-        Register.SERIAL_NUMBER + 3: (-1, -1, -1, 0),
-    }
+    table = {Register.SERIAL_NUMBER: registers(-1, -1, -1, -1, -1, -1)}
     serial = await _run(device, transport, table, device.telemetry.read_serial_number())
     assert isinstance(serial.value, str)  # type: ignore[attr-defined]
     assert serial.is_plausible  # type: ignore[attr-defined]
@@ -278,7 +269,7 @@ async def test_version_new_encoding() -> None:
     packed = (1 << 31) | (5 << 14) | (3 << 8) | 7
     low, high = packed & 0xFFFF, packed >> 16
     signed = [v - 0x10000 if v > 0x7FFF else v for v in (low, high)]
-    table = {Register.VERSION_LOW: (signed[0], signed[1], 0, 0)}
+    table = {Register.VERSION_LOW: registers(signed[0], signed[1], 0, 0)}
     version = await _run(device, transport, table, device.telemetry.read_version())
     assert version == "5.3.7"
     await device.close()
@@ -287,7 +278,7 @@ async def test_version_new_encoding() -> None:
 async def test_version_old_encoding_falls_back_to_raw() -> None:
     """最高位为 0 时退回显示低位寄存器的无符号值。两种编码在真实设备上都存在。"""
     device, transport = await _opened()
-    table = {Register.VERSION_LOW: (1234, 0, 0, 0)}
+    table = {Register.VERSION_LOW: registers(1234, 0, 0, 0)}
     version = await _run(device, transport, table, device.telemetry.read_version())
     assert version == "1234"
     await device.close()
@@ -300,9 +291,9 @@ async def test_device_info_is_resilient_per_field() -> None:
     """「序列号读不到」不该连温度也一起拿不到。"""
     device, transport = await _opened()
     table = {
-        Register.TEMPERATURE: (3000, 0, 0, 0),
-        Register.POWER: (396, 0, 0, 0),
-        Register.VERSION_LOW: (1234, 0, 0, 0),
+        Register.TEMPERATURE: registers(3000, 0, 0, 0),
+        Register.POWER: registers(396, 0, 0, 0),
+        Register.VERSION_LOW: registers(1234, 0, 0, 0),
         # 序列号故意不作答 → 读超时
     }
     info = await _run(device, transport, table, device.telemetry.read_device_info())
@@ -319,9 +310,9 @@ async def test_device_info_reads_battery_only_once() -> None:
     """percent 与 raw 来自同一次读取，否则白白多花一次 BLE 往返。"""
     device, transport = await _opened()
     table = {
-        Register.TEMPERATURE: (3000, 0, 0, 0),
-        Register.POWER: (396, 0, 0, 0),
-        Register.VERSION_LOW: (1, 0, 0, 0),
+        Register.TEMPERATURE: registers(3000, 0, 0, 0),
+        Register.POWER: registers(396, 0, 0, 0),
+        Register.VERSION_LOW: registers(1, 0, 0, 0),
     }
     await _run(device, transport, table, device.telemetry.read_device_info())
     power_reads = [
@@ -354,7 +345,7 @@ async def test_poller_can_disable_individual_reads() -> None:
     assert poller.is_running
 
     serving = asyncio.get_running_loop().create_task(
-        Responder(transport, {Register.Q0: (16384, 0, 0, 0)}).serve()
+        Responder(transport, {Register.Q0: registers(16384, 0, 0, 0)}).serve()
     )
     await asyncio.sleep(0.1)
     serving.cancel()
