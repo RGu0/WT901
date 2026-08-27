@@ -243,7 +243,10 @@ def read_recording(path: Path, *, tolerate_truncated_tail: bool = False) -> Reco
     损坏。截断恰好落在行边界时文件本身是完好的，不需要容忍，也不会报截断。
 
     头部自身被截断不在容忍范围内：那种文件连「是不是 WT901 录制」都无从判断，
-    两种模式都拒绝。
+    两种模式都拒绝。头部里的 ``note`` / ``device_id`` 可能含非 ASCII，切在多字节
+    字符中间时拒绝来自解码而不是 JSON 解析，抛的是 ``UnicodeDecodeError``——它是
+    :class:`ValueError` 的子类，按 ``ValueError`` 接的调用方不受影响。数据行只含
+    十六进制与数字，不会走到这条路上。
     """
     text = path.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if line.strip()]

@@ -234,6 +234,26 @@ def test_truncated_header_is_refused_in_both_modes(tmp_path: Path) -> None:
             read_recording(path, tolerate_truncated_tail=tolerate)
 
 
+def test_header_cut_inside_a_multibyte_character_is_refused_too(
+    tmp_path: Path,
+) -> None:
+    """头部的 note 含中文，切在多字节字符中间时拒绝来自解码而不是 JSON 解析。
+
+    抛的是 ``UnicodeDecodeError``——它是 ``ValueError`` 的子类，所以按 ``ValueError``
+    接的调用方拿到的行为一致。这条钉住的是「头部截断两种模式都拒绝」这句话对**两种
+    失败路径**都成立，而不是只对其中好看的那条。数据行只含十六进制与数字，走不到
+    这条路上。
+    """
+    header = BASELINE.read_bytes().split(b"\n")[0]
+    first_multibyte = next(i for i, byte in enumerate(header) if byte >= 0x80)
+    path = tmp_path / "utf8-cut.jsonl"
+    path.write_bytes(header[: first_multibyte + 1])
+
+    for tolerate in (False, True):
+        with pytest.raises(ValueError):
+            read_recording(path, tolerate_truncated_tail=tolerate)
+
+
 # ----- truncated 的语义 -------------------------------------------------------
 
 
