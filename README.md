@@ -9,9 +9,22 @@
 
 ## 安装
 
-```bash
-pip install wt901
+**本包未发布到 PyPI**，按 git 引用消费。钉 tag 而不是分支——分支会在你不知情时移动：
+
+```toml
+# pyproject.toml
+[project]
+dependencies = ["wt901"]
+
+[tool.uv.sources]
+wt901 = { git = "https://github.com/RGu0/WT901.git", tag = "v0.2.0" }
 ```
+
+```bash
+pip install "wt901 @ git+https://github.com/RGu0/WT901.git@v0.2.0"
+```
+
+每个 tag 对应 [CHANGELOG](CHANGELOG.md) 里的一节，升级前先读那一节的「升级须知」。
 
 Python ≥ 3.11。唯一运行时依赖是 [bleak](https://github.com/hbldh/bleak)。
 包内带 `py.typed`，下游可直接享受完整类型信息（`mypy --strict` 可见）。
