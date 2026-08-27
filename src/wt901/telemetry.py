@@ -55,7 +55,32 @@ class ChipTime:
     second: int
     millisecond: int
 
+    @property
+    def is_plausible(self) -> bool:
+        """这几个字段是否构成一个可能存在的日期。
+
+        寄存器整块回读全零时得到 ``month = 0``、``day = 0``——日历上没有第 0 月、
+        第 0 日，所以那**不是一个时间戳**。真机上全零回读是有据可查的现象，见
+        ``docs/protocol.md`` §10。
+
+        **这里刻意不抛异常**，与 :meth:`~wt901.telemetry.Telemetry.read_mac` 的处理
+        不同。理由是本方法要回答的问题恰好是「设备是不是刚上电」：一台时钟从未设过
+        的设备**可能本来就报全零**，而本库没有核实过它上电时报什么。抛异常会把「时钟
+        未设」和「这次没读出内容」一起抹掉，而前者正是调用方问的那件事。给出字段并
+        附这个标志，两种情况都还看得见。
+
+        判据只针对**全零回读**这一种情形，不做日历校验：``month = 0`` / ``day = 0``
+        是那次读取的签名，而「2 月 31 日」这类非零的错日期没有任何证据说明会发生，
+        为它写规则就是解决一个不存在的问题。年、时、分、秒的全零本身都是可能的真实
+        取值（2000 年、零点整），所以不看它们。
+        """
+        return 1 <= self.month <= 12 and 1 <= self.day <= 31
+
     def __str__(self) -> str:
+        if not self.is_plausible:
+            # 不能打成 "2000-00-00 00:00:00.000"——那看着像个时间戳，而它不是。
+            # 数据层挡住了、显示层再把歧义造一遍，是 RAY-293 踩过的坑。
+            return f"<非法芯片时间 {self.year:04d}-{self.month:02d}-{self.day:02d}>"
         return (
             f"{self.year:04d}-{self.month:02d}-{self.day:02d} "
             f"{self.hour:02d}:{self.minute:02d}:{self.second:02d}"
@@ -172,7 +197,12 @@ class Telemetry:
         return MagneticField(value=value, mag_type=self._mag_type, raw=tuple(raw))
 
     async def read_quaternion(self) -> Quaternion:
-        """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。"""
+        """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。
+
+        **归一化之前先看** :attr:`~wt901.models.Quaternion.is_plausible`：寄存器整块
+        回读全零时这里会交出 ``(0, 0, 0, 0)``，它的模是 0，不表示任何朝向，归一化会
+        得到 NaN 并一路飘进姿态解算。它为何附标志而不抛异常，写在该属性的文档里。
+        """
         response = await self._device.registers.read(Register.Q0)
         raw = response.values[:4]
         w, x, y, z = (units.quaternion_component(value) for value in raw)
@@ -198,6 +228,10 @@ class Telemetry:
 
         四个寄存器里前三个各自的高低字节承载两个字段，所以不能按「一个寄存器
         一个字段」来读。
+
+        **用之前先看** :attr:`ChipTime.is_plausible`：寄存器整块回读全零时这里会
+        交出 ``month = 0``、``day = 0``，那不是一个时间戳。它为何附标志而不抛异常，
+        写在该属性的文档里。
         """
         response = await self._device.registers.read(Register.CHIP_TIME_YEAR_MONTH)
         year_month, day_hour, minute_second, millisecond = (
@@ -291,10 +325,22 @@ class Telemetry:
         两个寄存器拼成 uint32。最高位为 1 时是「新版本号」编码，按 17/6/8 位
         拆成 ``主.次.修订``；否则退回直接显示低位寄存器的无符号值。这个分支来自
         官方 C# 实现，两种编码在真实设备上都存在。
+
+        两个寄存器都为零时抛 :class:`~wt901.errors.UnexpectedRegisterResponse`，
+        而不是走遗留分支返回 ``"0"``——那是一个看着像版本号的假值。这里选择抛异常
+        而不是像 :class:`ChipTime` 那样附标志：版本号只有「显示与比对」一个用途，
+        一个不可信的版本号毫无用处，与 :meth:`read_mac` 同理。经
+        :func:`read_device_info` 的逐项容错后，该字段自然落成 ``None``。
+
+        真机记录过的版本是 ``10080.1.22``（``ray-172/acceptance/``）。
         """
         response = await self._device.registers.read(Register.VERSION_LOW)
         low, high = _u16(response.values[0]), _u16(response.values[1])
         packed = low | (high << 16)
+        if packed == 0:
+            raise UnexpectedRegisterResponse(
+                "寄存器 0x2E/0x2F 回读全零，这不可能是一个真实的版本号"
+            )
         bits = f"{packed:032b}"
         if bits[0] == "1":
             major = int(bits[1:18], 2)
@@ -331,6 +377,15 @@ class TelemetryPoller:
     这些读取与 ``0x61`` 实时数据流抢同一条 BLE 链路。官方 SDK 无条件开一个线程
     每轮都读磁场与四元数，在 100 Hz 采集下会明显挤占带宽。所以这里做成显式开启，
     并且每一项的周期都可以单独关掉。
+
+    **不可信的读数照常写进属性，可信与否随值一起走。** 四项里每一项的类型都自带
+    判据——:attr:`Battery.is_plausible`、:attr:`~wt901.models.MagneticField.value`
+    为 ``None``、:attr:`~wt901.models.Quaternion.is_plausible`——所以这里不需要额外
+    的过滤或计数。轮询器不做「保持上一次的有效值」这类事：那会让一个陈旧的值冒充
+    当前状态，比给出一个自带「不可信」标志的新值更难查。
+
+    读取本身失败（超时、链路错）时属性保持不变并记 debug 日志，见 :meth:`_loop`
+    ——那与「读到了但值不可信」是两回事，后者会写进来。
     """
 
     def __init__(
@@ -344,6 +399,8 @@ class TelemetryPoller:
 
         self.magnetic_field: MagneticField | None = None
         self.quaternion: Quaternion | None = None
+        """最近一次读到的四元数。**用之前先看
+        :attr:`~wt901.models.Quaternion.is_plausible`**——全零回读会写进这里。"""
         self.temperature_c: float | None = None
         self.battery: Battery | None = None
 
