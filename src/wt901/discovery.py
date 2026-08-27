@@ -31,7 +31,12 @@ class DiscoveredDevice:
 
     address: str
     """稳定的展示/记录标识。**跨平台不可移植**：macOS 上是 CoreBluetooth UUID，
-    Linux/Windows 上是 MAC 地址。不要跨主机持久化。"""
+    Linux/Windows 上是 MAC 地址。不要跨主机持久化。
+
+    需要一个能跨主机持久化的设备身份（把模块绑到「左脚/右脚」这类角色并存下来）
+    时，连上以后读 :meth:`~wt901.telemetry.Telemetry.read_mac`——设备自报的蓝牙
+    地址由设备自己给出，与主机无关。名字也不行：同批次设备广播名相同。
+    """
     name: str | None
     rssi: int | None
     handle: Any = None

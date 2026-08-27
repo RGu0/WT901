@@ -11,6 +11,8 @@ from __future__ import annotations
 from enum import IntEnum
 
 __all__ = [
+    "MAC_START",
+    "MAC_WORDS",
     "MAG_START",
     "QUATERNION_START",
     "REGISTERS_PER_RESPONSE",
@@ -77,6 +79,17 @@ class Register(IntEnum):
     POWER = 0x64
     """电池原始值（约等于电压 ×100）。"""
 
+    MAC = 0x66
+    """设备自报的蓝牙地址首寄存器，共 3 个寄存器 6 字节。
+
+    **字节序是反的**：``0x66``–``0x68`` 按小端取出的 6 个字节，是蓝牙地址的
+    **空口顺序**（低位在前），显示顺序要整体倒过来。取值与排布见
+    :meth:`~wt901.telemetry.Telemetry.read_mac`。
+
+    这是本库唯一可跨主机持久化的设备身份——:attr:`~wt901.discovery.DiscoveredDevice.address`
+    在 macOS 上是 CoreBluetooth UUID，换台主机就变。
+    """
+
     KEY = 0x69
     """写 :data:`UNLOCK_KEY` 解锁配置寄存器。"""
 
@@ -98,6 +111,10 @@ REGISTERS_PER_RESPONSE = 4
 
 MAG_START = Register.HX
 QUATERNION_START = Register.Q0
+MAC_START = Register.MAC
+MAC_WORDS = 3
+"""蓝牙地址占的寄存器个数。6 字节 ÷ 每寄存器 2 字节，一次读取就够。"""
+
 SERIAL_NUMBER_START = Register.SERIAL_NUMBER
 SERIAL_NUMBER_WORDS = 6
 

@@ -21,6 +21,25 @@
 
 ### 新增
 
+* **`Telemetry.read_mac()`、`DeviceInfo.mac`、`Register.MAC`** —— 设备自报的蓝牙
+  地址（寄存器 `0x66`）现在能具名读到，返回 `XX:XX:XX:XX:XX:XX`。
+
+  此前本库**没有任何一个可跨主机持久化的设备身份**：`DiscoveredDevice.address` 在
+  macOS 上是 CoreBluetooth UUID（它自己的文档就写着「不要跨主机持久化」），广播名
+  同批次重复（两台设备都叫 `WT901BLE67`），序列号真机上读到过逐字节全零。下游要把
+  模块绑到「左脚/右脚」并跨主机保持这个绑定，只能自己发 `FF AA 27 66 00` 并解析
+  `0x71` 应答——那是把设备知识推回业务仓库（RAY-279）。
+
+  **字节序是反的**：`0x66`–`0x68` 按小端取出的 6 字节是地址的空口顺序，显示时整体
+  倒过来。手册没给这个排布；它由 2026-08-27 两台真机的实测应答推定——四种可能排布
+  里只有这一种让两台设备都得到合法的 BLE 随机静态地址。**在 Windows/Linux/Android
+  主机上看一眼同一台设备的 MAC 即可证实或推翻**，依据与推理写在 `read_mac` 的文档
+  与 `docs/protocol.md` 里。
+
+  回读全零抛 `UnexpectedRegisterResponse` 而不是返回 `00:00:00:00:00:00`：序列号
+  寄存器就出现过全零（RAY-172），MAC 若也如此，一个「所有设备都相同」的绑定键会让
+  两台设备安静地互相冒充。`read_device_info()` 里这一项照旧逐项容错，读不到为 `None`。
+
 * **`AlgorithmMode`、`Settings.algorithm`、`RegisterAccess.set_algorithm` /
   `read_algorithm`** —— 6 轴/9 轴姿态解算算法（寄存器 `0x24`）现在能具名表达，与
   `set_output_rate` / `set_bandwidth` 同构。
