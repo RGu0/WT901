@@ -125,12 +125,21 @@ def _coerce_mounting(value: Mounting | int) -> Mounting:
 
 
 def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
+    """把取值收敛到已登记的档位，其余一律拒绝。
+
+    措辞与 :func:`_coerce_return_rate` 的「未核实」**有意不同**：速率的每一档都在
+    真机上量过，带宽一档都没有（见 :class:`Bandwidth`）。这里拒绝的理由因此只有
+    一条——防止**误**写一个没人看过的编码让设备进入未知状态，而那种故障在现场表现
+    为「数据不对但连接正常」。这条理由与证据强度无关，所以拒绝照旧；但不能借它
+    宣称被放行的那三档已经核实过。
+    """
     try:
         return Bandwidth(value)
     except ValueError:
         raise UnsupportedRegisterError(
-            f"带宽编码 0x{int(value):02X} 未在真机上核实。"
-            f"当前已核实：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}。"
+            f"带宽编码 0x{int(value):02X} 未登记。"
+            f"当前登记：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}"
+            "（标称值来自维特通用编码表，本库未实测，见 Bandwidth 文档）。"
         ) from None
 
 
@@ -309,7 +318,13 @@ class RegisterAccess:
         return resolved
 
     async def set_bandwidth(self, bandwidth: Bandwidth | int) -> Bandwidth:
-        """设置传感器带宽。"""
+        """设置抗混叠滤波器带宽。
+
+        **档位的标称频率未经本库实测**，见 :class:`~wt901.protocol.registers.Bandwidth`。
+        采样定理要求带宽不超过回传速率的一半，但本库不替调用方检查这件事：两个数
+        谁也不是被核实过的量纲，用一个没核实的数去校验另一个没核实的数，只会给出
+        一种虚假的安全感。
+        """
         resolved = _coerce_bandwidth(bandwidth)
         await self.write(Register.BANDWIDTH, resolved)
         return resolved
