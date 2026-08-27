@@ -18,8 +18,14 @@ EXAMPLES = ROOT / "examples"
 MINIMAL_CAPTURE_LINE_BUDGET = 30
 
 
-def test_version_is_exposed() -> None:
-    assert wt901.__version__ == "0.1.0"
+def test_version_is_exposed_and_matches_the_packaging_metadata() -> None:
+    """``__version__`` 与 ``pyproject.toml`` 必须一致。
+
+    两处各写一遍版本号，迟早会有一处忘了改——而那种不一致是安静的：装上去的包
+    自称一个版本，代码里报另一个。这条测试把它们钉在一起，发布时漏改哪一处都会红。
+    """
+    declared = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{wt901.__version__}"' in declared
 
 
 def test_py_typed_marker_ships_with_the_package() -> None:
@@ -143,5 +149,11 @@ def test_license_is_present_and_declared() -> None:
     assert 'license = "MIT"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
 
-def test_changelog_is_present() -> None:
-    assert (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").find("0.1.0") > 0
+def test_changelog_has_a_section_for_the_current_version() -> None:
+    """光「有 CHANGELOG」不够——当前版本必须在里面有自己的一节。
+
+    发布时改了版本号却忘了给它定版（内容还挂在「未发布」下），下游读 tag 时就
+    找不到说明书。这条测试挡的正是那一步。
+    """
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert f"## {wt901.__version__}" in changelog
