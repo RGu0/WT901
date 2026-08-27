@@ -138,6 +138,9 @@ class DeviceInfo:
     * ``battery_raw is None`` —— 这一项没读到（未读或读失败）
     * ``battery_raw`` 有值而 ``battery_percent`` 为 ``None`` —— 读到了，但原始值
       不可能是一次真实测量，本库拒绝把它映射成一个看着正常的百分比
+
+    要做持久化的设备身份用 ``mac``，别用 ``serial_number``：真机上读到过逐字节
+    全零的序列号（RAY-172），而那种失败是安静的。
     """
 
     serial_number: str | None = None
@@ -145,3 +148,9 @@ class DeviceInfo:
     temperature_c: float | None = None
     battery_percent: int | None = None
     battery_raw: int | None = None
+    mac: str | None = None
+    """设备自报的蓝牙地址 ``XX:XX:XX:XX:XX:XX``，见
+    :meth:`~wt901.telemetry.Telemetry.read_mac`。**唯一可跨主机持久化的身份。**
+
+    排在最后只是为了不挪动既有字段的位置——它是这里最该被拿来当身份的那个。
+    """

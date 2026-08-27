@@ -54,7 +54,7 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 |---|---|
 | 发现与连接 | `scan`、`DiscoveredDevice`、`WT901Device`、`ConnectionEvent`、`ConnectionState`、`ReconnectPolicy`、`DeviceStats`、`OutputMode` |
 | 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效） |
-| 遥测 | `Telemetry`（`device.telemetry`）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery` |
+| 遥测 | `Telemetry`（`device.telemetry`）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery`（`read_mac()` 是唯一可跨主机持久化的设备身份） |
 | 校准 | `Calibration`（`device.calibration`）、`CalibrationMode` |
 | 多设备 | `merge`、`MergedStream`、`MergeStats` |
 | 数据模型 | `ImuSample`、`Vec3`、`Euler`、`Quaternion`、`MagneticField`、`DeviceInfo`、`RawImuCounts` |
@@ -73,6 +73,10 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 |---|---|---|---|
 | macOS | CoreBluetooth 分配的 UUID | ❌ 每台主机各生成一份 | 一般稳定，但不保证 |
 | Linux / Windows | 设备 MAC 地址 | ✅ | ✅ |
+
+要把设备绑到「左脚/右脚」这类角色**并持久化**，用 `await device.telemetry.read_mac()`
+——设备自报的蓝牙地址（寄存器 `0x66`）由设备自己给出，与主机无关。别用广播名（同批次
+重复）或序列号（真机上读到过全零）。
 
 **连接时请把 `scan()` 返回的整个 `DiscoveredDevice` 传进去，不要只传地址字符串。**
 给字符串时 bleak 需要自己再扫一遍做地址→平台句柄的解析，macOS 上这个解析并不

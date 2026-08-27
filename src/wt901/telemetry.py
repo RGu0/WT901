@@ -1,4 +1,4 @@
-"""按需读取磁场、四元数、温度、电量、芯片时间、序列号、版本号。
+"""按需读取磁场、四元数、温度、电量、芯片时间、MAC、序列号、版本号。
 
 这些量**不在** ``0x61`` 实时数据流里，必须主动读寄存器取回。它们与实时数据流
 共用同一条 BLE 链路，所以读得越勤，留给采样的带宽越少——这就是本模块的周期
@@ -13,10 +13,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
-from wt901.errors import WT901Error
+from wt901.errors import UnexpectedRegisterResponse, WT901Error
 from wt901.models import DeviceInfo, MagneticField, Quaternion, Vec3
 from wt901.protocol import units
 from wt901.protocol.registers import (
+    MAC_WORDS,
     SERIAL_NUMBER_WORDS,
     Register,
 )
@@ -184,6 +185,48 @@ class Telemetry:
             millisecond=millisecond,
         )
 
+    async def read_mac(self) -> str:
+        """读设备自报的蓝牙地址，返回 ``XX:XX:XX:XX:XX:XX``（大写冒号分隔）。
+
+        **这是本库唯一可跨主机持久化的设备身份。**
+        :attr:`~wt901.discovery.DiscoveredDevice.address` 在 macOS 上是
+        CoreBluetooth UUID，换台主机就变；广播名同批次重复；序列号在真机上读到过
+        全零（见 :meth:`read_serial_number`）。要把设备绑到「左脚/右脚」这类角色
+        并持久化，只能用这个。
+
+        **字节序**：``0x66``–``0x68`` 三个寄存器按小端取出的 6 个字节是地址的空口
+        顺序（低位在前），所以整体倒过来才是显示顺序。2026-08-27 两台 WT901BLE67
+        实测（``tools/probe_mac.py``，证据 ``ray-279/device-mac/acceptance/``）：
+
+        ====================  =========================  =========================
+        寄存器 0x66/0x67/0x68  取出的 6 字节               本方法返回
+        ====================  =========================  =========================
+        1147 901A FD08        ``47 11 1A 90 08 FD``      ``FD:08:90:1A:11:47``
+        C931 4F46 F9B3        ``31 C9 46 4F B3 F9``      ``F9:B3:4F:46:C9:31``
+        ====================  =========================  =========================
+
+        **排布是推出来的，不是拿标签比出来的**——设备标签上没印 MAC，macOS 也不给。
+        但四种可能的排布里只有这一种让**两台**设备都得到合法的蓝牙地址：倒过来后
+        两个首字节 ``0xFD``/``0xF9`` 的高 2 位都是 ``11``，即 BLE 随机静态地址；另
+        三种排布至少有一台落在「组播位为 1 的公有地址」（不存在）或「私有地址」
+        （会自己轮换，不可能固定写在寄存器里）。空口低位在前也正是 BLE 传地址的
+        方式。**要推翻它，只需在 Windows/Linux/Android 主机上看一眼同一台设备的
+        MAC**——对不上就是这个方法错了，改一行加换 fixture 即可。
+
+        全零的应答会抛 :class:`~wt901.errors.UnexpectedRegisterResponse` 而不是
+        返回 ``00:00:00:00:00:00``：本器件的序列号寄存器就读到过逐字节全零
+        （RAY-172），MAC 若也如此，一个「所有设备都相同的稳定绑定键」会让两台设备
+        安静地互相冒充。只挡全零，不发明别的过滤规则——没实测到的不算数。
+        """
+        response = await self._device.registers.read(Register.MAC)
+        words = [_u16(value) for value in response.values[:MAC_WORDS]]
+        payload = b"".join(word.to_bytes(2, "little") for word in words)
+        if not any(payload):
+            raise UnexpectedRegisterResponse(
+                "寄存器 0x66 回读全零，这不可能是一个真实的蓝牙地址"
+            )
+        return ":".join(f"{byte:02X}" for byte in reversed(payload))
+
     async def read_serial_number(self) -> str:
         """读 12 字节 ASCII 序列号。
 
@@ -228,6 +271,7 @@ class Telemetry:
         battery = await _attempt(self.read_battery, "电量")
         return DeviceInfo(
             serial_number=await _attempt(self.read_serial_number, "序列号"),
+            mac=await _attempt(self.read_mac, "MAC"),
             version=await _attempt(self.read_version, "版本号"),
             temperature_c=await _attempt(self.read_temperature, "温度"),
             battery_percent=battery.percent if battery is not None else None,
