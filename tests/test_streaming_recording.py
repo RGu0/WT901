@@ -83,6 +83,10 @@ class _CountingPath:
 
     做成替身而不是给 `open_recording` 加一个注入点：被测的正是「它怎么读文件」，
     为了测试在生产代码上开一个口子，测到的就变成那个口子了。
+
+    ``read_text`` / ``read_bytes`` **故意做成会炸的**。没有它们，一个退回
+    ``path.read_text()`` 的实现会绕开这个替身：账本停在 0，而「已读远小于文件」
+    这个断言在 0 上恰好成立——防线会变成一条永远通过的空断言。
     """
 
     def __init__(self, path: Path) -> None:
@@ -91,6 +95,12 @@ class _CountingPath:
 
     def open(self, *args: Any, **kwargs: Any) -> Any:
         return _CountingHandle(self._path.open(*args, **kwargs), self.ledger)
+
+    def read_text(self, *args: Any, **kwargs: Any) -> str:
+        raise AssertionError("整份读入：流式入口不该调用 read_text()")
+
+    def read_bytes(self) -> bytes:
+        raise AssertionError("整份读入：流式入口不该调用 read_bytes()")
 
 
 def _counting(path: Path) -> tuple[Path, dict[str, Any]]:
@@ -123,7 +133,7 @@ def test_first_chunk_arrives_before_the_file_is_read(tmp_path: Path) -> None:
 
     assert first.t == 0.0
     # 向前看一行，所以此刻读到的是头部 + 前两个数据行，量级几百字符。
-    assert ledger["chars"] < total // 100
+    assert 0 < ledger["chars"] < total // 100, "下界防的是替身根本没被用上"
 
 
 def test_header_alone_reads_almost_nothing(tmp_path: Path) -> None:
@@ -137,7 +147,7 @@ def test_header_alone_reads_almost_nothing(tmp_path: Path) -> None:
 
     assert header.device_id == "dev"
     assert header.note == "基线"
-    assert ledger["chars"] < total // 100
+    assert 0 < ledger["chars"] < total // 100, "下界防的是替身根本没被用上"
 
 
 def test_iterating_fully_reads_everything_once(tmp_path: Path) -> None:
