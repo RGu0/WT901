@@ -2,8 +2,12 @@
 
 来源：官方 SDK `WITMOTION/WitBluetooth_BWT901BLE5_0` 的 C# 与 Android 实现
 （`Wit.Example_BWT901BLE/Form1.cs`、`ble5/Components/Bwt901bleProcessor.cs`、
-`DipSensorMagHelper.java`）。**只登记已核实的地址与取值**——官方 BLE 5.0
+`DipSensorMagHelper.java`）。**只登记有依据的地址与取值**——官方 BLE 5.0
 协议文档并未给出完整寄存器表，凭记忆补全会写入未知语义。
+
+「有依据」的强度逐项不同，各枚举的文档写明了自己那一档是哪种：`ReturnRate` 每档
+都在真机上实测过实际速率；`Bandwidth` 三档的标称频率则**一个都没实测过**，只核实
+了「设备接受该编码」与「三档单调有序」。别把这两种混为一谈。
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@
 ## 方法（RAY-298 验收标准第 1 条要求开工前写定，已记进 Issue）
 
 设备静置，回传速率固定在 ``0x0B``（已实测 198.43 Hz）。分别在带宽 ``0x00``（256 Hz）、
-``0x03``（待判定）、``0x04``（20 Hz，已核实）下各采一段，对每段做 Welch periodogram，
+``0x03``（待判定）、``0x04``（标称 20 Hz）下各采一段，对每段做 Welch periodogram，
 然后看**比值**：
 
     R(f)  = P_code(f) / P_0x00(f)
@@ -42,7 +42,7 @@
 真值    估计范围        说明
 ======  ==============  ====================================
 10 Hz   11.0–13.8 Hz
-20 Hz   17.0–25.3 Hz    ``0x04``，已核实档，用作方法自校验
+20 Hz   17.0–25.3 Hz    ``0x04`` 的标称值，用作方法自校验
 42 Hz   41.8–66.4 Hz    偏高，因为参考档的混叠抬升随频率变化
 98 Hz   无拐点          超过奈奎斯特，观测频段内看不到
 188 Hz  无拐点
@@ -92,7 +92,8 @@ from wt901.discovery import scan
 from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 
 PROBE_RATE = ReturnRate.HZ_200
-"""0x0B。实测 198.43 Hz，是已核实档位里最高的一档——采样率越高，能看到的频段越宽。"""
+"""0x0B。实测 198.43 Hz，是已核实档位里最高的一档（速率是逐档实测过的，与带宽不同）。
+采样率越高，能看到的频段越宽。"""
 
 REFERENCE_CODE = Bandwidth.HZ_256
 """作为比值的分母：它是三档里滤得最松的，最接近「不滤」。"""
@@ -101,7 +102,10 @@ CANDIDATE_CODE = 0x03
 """本次要核实的编码。"""
 
 SELF_CHECK_CODE = Bandwidth.HZ_20
-"""已核实的 20 Hz 档。先跑它，方法自校验就先有结论。"""
+"""标称 20 Hz 的那一档。先跑它，方法自校验就先有结论。
+
+**这个标称值本身也没被实测过**（RAY-298 的取证反过来查实了这一点），所以自校验
+失败时有两种成因分不开：方法无效，或者这一档根本不是 20 Hz。见 RAY-304。"""
 
 DEFAULT_SECONDS = 30.0
 SETTLE = 0.8
@@ -538,7 +542,7 @@ async def _run_probe(seconds: float) -> int:
             )
 
             for code in (SELF_CHECK_CODE, CANDIDATE_CODE):
-                label = "已核实的 20 Hz，用作方法自校验" if code == SELF_CHECK_CODE else "待判定"
+                label = "标称 20 Hz，用作方法自校验" if code == SELF_CHECK_CODE else "待判定"
                 print(f"\n── 0x{int(code):02X}（{label}）")
                 freqs, accel, gyro, segments, fs, clean = await _measure(
                     device, code, seconds
@@ -621,7 +625,7 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_clean: bool) -> Non
     low, high = SELF_CHECK_BAND
     if self_check.cutoff is None or not low <= self_check.cutoff <= high:
         print(
-            f"\n❌ 判据 1（方法自校验）不过：已核实的 0x04（20 Hz）估计为 "
+            f"\n❌ 判据 1（方法自校验）不过：标称 20 Hz 的 0x04 估计为 "
             f"{_format_cutoff(self_check.cutoff)}，不在 {low:.0f}–{high:.0f} Hz 内。\n"
             "   方法无法从一个已知答案回推出已知答案，它对 0x03 的读数也就不算数。\n"
             "   → 按判据 4，退回 Issue 描述里的方向 3：只核实到「0x03 被接受且介于两档\n"

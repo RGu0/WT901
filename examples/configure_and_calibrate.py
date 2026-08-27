@@ -39,7 +39,9 @@ async def main() -> None:
         async with device.registers.settings() as pending:
             pending.output_rate = ReturnRate.HZ_100
             pending.bandwidth = Bandwidth.HZ_20
-        print("已设为 100 Hz / 20 Hz 带宽")
+        # 「20 Hz」是维特通用编码表给 0x04 的标称值，本库没实测过它的截止频率，
+        # 所以这里报编码而不是报频率——见 Bandwidth 的文档。
+        print("已设为 100 Hz 回传速率 / 带宽编码 0x04（标称 20 Hz，未实测）")
 
         info = await device.telemetry.read_device_info()
         # 电量同时打印百分比与原始值。百分比是查表得来的，单看它无法区分「电量
