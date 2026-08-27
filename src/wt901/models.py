@@ -109,6 +109,25 @@ class Quaternion:
     z: float
     raw: tuple[int, ...]
 
+    @property
+    def is_plausible(self) -> bool:
+        """这次读数是否可能是一个真实姿态。
+
+        ``(0, 0, 0, 0)`` 的模是 0，**不表示任何朝向**——单位四元数的模恒为 1。
+        它只会来自一次没读出内容的读取：真机上寄存器整块回读全零是有据可查的现象
+        （见 :meth:`~wt901.telemetry.Telemetry.read_serial_number` 与
+        ``docs/protocol.md`` §10）。
+
+        判据只看**四个原始值是否全为零**，不检查模是否接近 1：器件给的是定点数，
+        正常读数的模也只是「接近」1，划一条容差线就是发明一个没实测过的规则。与
+        :class:`~wt901.telemetry.SerialNumber` 只看「有没有非零字节」是同一条线。
+
+        字段照常给出——``False`` 时它们全是 0，而 ``raw`` 是判定成因需要的东西。
+        **归一化之前先看这个属性**：对模为 0 的四元数归一化会得到 NaN，那个 NaN
+        会一路飘进姿态解算，等有人发现时已经离现场很远。
+        """
+        return any(self.raw)
+
 
 @dataclass(frozen=True, slots=True)
 class MagneticField:

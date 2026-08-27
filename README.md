@@ -229,6 +229,32 @@ if not serial.is_plausible:
 `serial_number` 为 `None` 说明读到了但内容全零。**要做跨主机持久化的设备身份，用
 `read_mac()`，不要用序列号。**
 
+### 全零回读：一条统一的判据
+
+寄存器整块回读全零是这个器件**有据可查**的现象（`docs/protocol.md` §10）。凡是这种
+读数不可能是真实测量的地方，本库都不给一个看着正常的结果：
+
+| 读取 | 全零时 |
+|---|---|
+| `read_battery()` | `percent` 为 `None` |
+| `read_mac()` | 抛 `UnexpectedRegisterResponse` |
+| `read_serial_number()` | `value` 为 `None` |
+| `read_version()` | 抛 `UnexpectedRegisterResponse` |
+| `read_chip_time()` | `is_plausible` 为 `False`（月 0 日 0 不是日期） |
+| `read_quaternion()` | `is_plausible` 为 `False`（模为 0 不是朝向） |
+| `read_temperature()` | **照常返回 0 °C** |
+
+最后一行不是遗漏：0 °C 是可能的真实测量。本库只挡**不可能**的值，多挡一个就是发明
+规则。
+
+两种形状（抛异常 / 附标志）的取舍按用途定，逐条写在各自的 docstring 里：值只有一个
+用途、不可信就毫无用处的抛异常（MAC、版本号）；「读到了全零」本身是线索、或原始值
+仍有价值的附标志（电量、序列号、芯片时间、四元数）。
+
+**四元数归一化前先看 `is_plausible`** —— 对模为 0 的四元数归一化得到 NaN，它会一路
+飘进姿态解算。`TelemetryPoller` 默认每秒轮询四元数，不可信的值照常写进
+`poller.quaternion`，标志随值一起走。
+
 ### 不做时钟同步补偿
 
 `t_host` 是**主机收到 BLE 通知的时刻**，不是采样时刻——器件不提供时间戳。它含蓝牙
