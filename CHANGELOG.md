@@ -19,7 +19,33 @@
   现在超出预算的流被移出等待集，直到它自己再开口；这段时间合流按存活流全速推进。
   该缺陷自 0.1.0 起存在，与采样率无关（100 Hz 下同样塌到 20 Hz）。
 
+### 破坏性变更
+
+* **`Telemetry.read_serial_number()` 改为返回 `SerialNumber` 而不是 `str`。**
+
+  全零的回读此前会变成空字符串 `""`，在 `DeviceInfo` 里与「这一项没读到」长得一模
+  一样。而这不是假想情形：本器件真机上读到过逐字节全零的序列号（RAY-172 记过一次，
+  RAY-279 的取证里两台设备再次全零）。下游拿 `""` 当绑定键会让**每台设备的键都相同**
+  ——两台设备安静地互相冒充，正是 RAY-279 反复警告的那种失败（RAY-293）。
+
+  ```python
+  serial = await device.telemetry.read_serial_number()
+  serial.value        # str | None，全零时为 None
+  serial.raw          # bytes，始终给出，判定成因需要它
+  serial.is_plausible # 这次读数是否可能是真实内容
+  str(serial)         # 可打印：全零时是空串
+  ```
+
+  形状与 `Battery` 一致（RAY-182 的 `raw = 0`），而**不是**与 `read_mac` 一致（那里
+  全零直接抛异常）。区别是有意的：MAC 只有身份一个用途，不可信的 MAC 毫无用处；
+  序列号是设备信息，「它读出来是全零」本身就是诊断线索，值得原样交出来。
+
+  `DeviceInfo.serial_number` 的类型不变（`str | None`），新增 `serial_number_raw`
+  区分两种 `None`。非 ASCII 字节以 `\uFFFD` 替换的行为不变——掺乱码与全零是两回事。
+
 ### 新增
+
+* **`SerialNumber`** —— 见上，从包根导出。
 
 * **`Mounting`、`Settings.mounting`、`RegisterAccess.set_mounting` / `read_mounting`**
   —— 安装方向（寄存器 `0x23`）现在能具名表达，与 `set_output_rate` / `set_bandwidth` /

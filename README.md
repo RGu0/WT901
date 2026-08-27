@@ -54,7 +54,7 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 |---|---|
 | 发现与连接 | `scan`、`DiscoveredDevice`、`WT901Device`、`ConnectionEvent`、`ConnectionState`、`ReconnectPolicy`、`DeviceStats`、`OutputMode` |
 | 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效）、`Mounting`（安装方向，写默认值也别省） |
-| 遥测 | `Telemetry`（`device.telemetry`；`read_mac()` 是唯一可跨主机持久化的设备身份）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery` |
+| 遥测 | `Telemetry`（`device.telemetry`；`read_mac()` 是唯一可跨主机持久化的设备身份）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery`、`SerialNumber` |
 | 校准 | `Calibration`（`device.calibration`）、`CalibrationMode` |
 | 多设备 | `merge`、`MergedStream`、`MergeStats` |
 | 数据模型 | `ImuSample`、`Vec3`、`Euler`、`Quaternion`、`MagneticField`、`DeviceInfo`、`RawImuCounts` |
@@ -194,6 +194,21 @@ iTerm、IDE 等）。**没有授权时的表现不止一种**：
 判断读数是否可用用 `battery.is_plausible`；`DeviceInfo` 里则看 `battery_raw`：
 它为 `None` 说明没读到，它有值而 `battery_percent` 为 `None` 说明读到了但数值不
 可能。**阈值以下的合法低电量读数不受影响**（339 → 0%，340 → 5%）。
+
+### 序列号可能整块读回全零
+
+同一形状，同一理由。真机上读到过逐字节全零的序列号（两台不同主机、两台不同设备），
+那不是一个空序列号，是一次读不出内容的读取：
+
+```python
+serial = await device.telemetry.read_serial_number()
+if not serial.is_plausible:
+    ...  # serial.value 是 None，只有 serial.raw 可用
+```
+
+`DeviceInfo` 里同样靠 `serial_number_raw` 分辨：它为 `None` 说明没读到，它有值而
+`serial_number` 为 `None` 说明读到了但内容全零。**要做跨主机持久化的设备身份，用
+`read_mac()`，不要用序列号。**
 
 ### 不做时钟同步补偿
 

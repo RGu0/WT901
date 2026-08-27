@@ -29,6 +29,7 @@ __all__ = [
     "Battery",
     "ChipTime",
     "PollerConfig",
+    "SerialNumber",
     "Telemetry",
     "TelemetryPoller",
 ]
@@ -78,6 +79,33 @@ class Battery:
     def is_plausible(self) -> bool:
         """这次读数是否可能是真实测量。"""
         return self.percent is not None
+
+
+@dataclass(frozen=True, slots=True)
+class SerialNumber:
+    """序列号。``value`` 为 ``None`` 表示这次读取没读出内容。
+
+    形状与 :class:`Battery` 一致，理由也一样：读到了一个**不可能是真实内容**的
+    回读时，不硬给一个看着正常的结果。这里的「不可能」很具体——12 个字节全是 0
+    不是一个空序列号，是一次读不出内容的读取，而本器件真机上就是这样
+    （RAY-172、RAY-293）。
+
+    ``raw`` 始终给出，因为判定成因需要它：全零、部分可读、还是掺了非 ASCII 字节，
+    指向的方向完全不同。
+
+    **刻意不提供** ``__str__``。给它一个「全零时返回空串」的实现，等于把本类要消除的
+    那个歧义原样搬进显示层——``f"SN: {serial}"`` 又会打出与「字段为空」一模一样的东西。
+    :class:`Battery` 同样没有 ``__str__``。要显示就显式取 ``value``，拿不准先看
+    ``is_plausible``。
+    """
+
+    raw: bytes
+    value: str | None
+
+    @property
+    def is_plausible(self) -> bool:
+        """这次读数是否可能是真实内容。"""
+        return self.value is not None
 
 
 @dataclass
@@ -227,19 +255,32 @@ class Telemetry:
             )
         return ":".join(f"{byte:02X}" for byte in reversed(payload))
 
-    async def read_serial_number(self) -> str:
+    async def read_serial_number(self) -> SerialNumber:
         """读 12 字节 ASCII 序列号。
 
         序列号占 6 个寄存器，而一次读取只回 4 个，所以要读两次：``0x7F`` 与
         ``0x82``。非 ASCII 字节以 ``\\uFFFD`` 替换而非抛异常——序列号读花了是
         个诊断线索，不该让整个设备信息读取失败。
+
+        **全零的回读不是一个空序列号，是一次读不出内容的读取。**
+        :attr:`SerialNumber.value` 此时为 ``None``，只有 ``raw`` 可用。这不是假想
+        防御：本器件真机上就读到过逐字节全零（RAY-172，`ray-279` 的两台设备再次
+        全零），此前它会变成空字符串 ``""``，在 :class:`~wt901.models.DeviceInfo`
+        里与「没读到」长得一模一样，而下游拿 ``""`` 当绑定键会让每台设备的键都相同。
+
+        与 :meth:`read_mac` 的形状不同是**有意的**：MAC 只有一个用途——身份，一个
+        不可信的 MAC 毫无用处，所以那里直接抛异常。序列号是设备信息，「它读出来是
+        全零」这件事本身就是诊断线索，值得原样交出来，与 :class:`Battery` 同理。
         """
         first = await self._device.registers.read(Register.SERIAL_NUMBER)
         second = await self._device.registers.read(Register.SERIAL_NUMBER + 3)
         words = list(first.values[:3]) + list(second.values[: SERIAL_NUMBER_WORDS - 3])
 
         payload = b"".join(_u16(word).to_bytes(2, "little") for word in words)
-        return payload.decode("ascii", errors="replace").rstrip("\x00")
+        value: str | None = None
+        if any(payload):
+            value = payload.decode("ascii", errors="replace").rstrip("\x00")
+        return SerialNumber(raw=payload, value=value)
 
     async def read_version(self) -> str:
         """读固件版本号。
@@ -266,11 +307,13 @@ class Telemetry:
         是诊断用的，「序列号读不到」不该连温度也一起拿不到。
 
         电量只读一次：``percent`` 与 ``raw`` 来自同一次读取，否则两个字段可能
-        取自不同时刻的两次 BLE 往返，白白多花一次链路时间。
+        取自不同时刻的两次 BLE 往返，白白多花一次链路时间。序列号同理。
         """
         battery = await _attempt(self.read_battery, "电量")
+        serial = await _attempt(self.read_serial_number, "序列号")
         return DeviceInfo(
-            serial_number=await _attempt(self.read_serial_number, "序列号"),
+            serial_number=serial.value if serial is not None else None,
+            serial_number_raw=serial.raw if serial is not None else None,
             mac=await _attempt(self.read_mac, "MAC"),
             version=await _attempt(self.read_version, "版本号"),
             temperature_c=await _attempt(self.read_temperature, "温度"),

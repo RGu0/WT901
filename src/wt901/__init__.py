@@ -77,7 +77,14 @@ from wt901.protocol.registers import (
     Register,
     ReturnRate,
 )
-from wt901.telemetry import Battery, ChipTime, PollerConfig, Telemetry, TelemetryPoller
+from wt901.telemetry import (
+    Battery,
+    ChipTime,
+    PollerConfig,
+    SerialNumber,
+    Telemetry,
+    TelemetryPoller,
+)
 from wt901.transport.base import Transport
 from wt901.transport.ble import BleTransport
 
@@ -117,6 +124,7 @@ __all__ = [
     "RegisterAccess",
     "RegisterResponse",
     "ReturnRate",
+    "SerialNumber",
     "Settings",
     "Telemetry",
     "TelemetryPoller",

@@ -54,7 +54,12 @@ async def main() -> int:
         # --- 设备身份：与上位机软件比对 ---
         info = await device.telemetry.read_device_info()
         print("设备信息（请与上位机软件显示的值逐项比对）")
-        print(f"  序列号   = {info.serial_number!r}")
+        if info.serial_number is None and info.serial_number_raw is not None:
+            # 「读到了但内容全零」与「没读到」在这里必须分得开——本器件真机上
+            # 前者是常态（RAY-172、RAY-293），打成 None 会让人以为是链路问题。
+            print(f"  序列号   = 读到了但内容全零（raw={info.serial_number_raw.hex()}）")
+        else:
+            print(f"  序列号   = {info.serial_number!r}")
         print(f"  版本号   = {info.version!r}")
         print(f"  温度     = {info.temperature_c} °C")
         print(f"  电量     = {info.battery_percent}%（原始值 {info.battery_raw}）")
