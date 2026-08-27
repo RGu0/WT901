@@ -4,10 +4,10 @@
 「0 是水平、1 是垂直」这条设备知识留在每个调用方手里。装反了设备不报错，只会让姿态
 解算的重力轴对不上——数据一直偏，而链路、速率、丢包这些可观测量全部正常。
 
-还有一层：适配文档给的是**七步**序列，其中安装方向那一步写的很可能就是出厂默认值。
-它的价值不在于改变什么，而在于让「一份配置快照完全决定设备状态」成立，所以
-`test_writing_the_factory_default_is_still_a_real_write` 把「即使是默认值也真的发出去」
-钉住——省掉它是最容易被后来者当成优化做掉的事。
+还有一层：适配文档给的是**七步**序列，其中安装方向那一步写的可能就是设备当前已有的
+值（0 是不是出厂默认，本库没核实过）。它的价值不在于改变什么，而在于让「一份配置快照
+完全决定设备状态」成立，所以 `test_writing_horizontal_is_still_a_real_write` 把「哪怕
+可能是幂等的也真的发出去」钉住——省掉它是最容易被后来者当成优化做掉的事。
 """
 
 from __future__ import annotations
@@ -94,11 +94,12 @@ async def test_set_mounting_vertical() -> None:
     await device.close()
 
 
-async def test_writing_the_factory_default_is_still_a_real_write() -> None:
-    """写出厂默认值多半是幂等的，但**必须真的发出去**。
+async def test_writing_horizontal_is_still_a_real_write() -> None:
+    """这次写入可能是幂等的，但**必须真的发出去**。
 
-    省掉它就等于依赖设备残留的配置——模块会被别处用过，配置又固化在 flash。这是
-    最容易被后来者当成冗余优化掉的一步，所以专门钉一条。
+    0（水平）是不是出厂默认，本库没有核实过；而无论是不是，省掉它都等于依赖设备
+    残留的配置——模块会被别处用过，配置又固化在 flash。这是最容易被后来者当成冗余
+    优化掉的一步，所以专门钉一条。
     """
     device, transport = await _opened()
     await device.registers.set_mounting(Mounting.HORIZONTAL)
