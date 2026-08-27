@@ -172,9 +172,9 @@ class Telemetry:
         return MagneticField(value=value, mag_type=self._mag_type, raw=tuple(raw))
 
     async def read_quaternion(self) -> Quaternion:
-        """读姿态四元数。一次读取正好覆盖 Q0–Q3 四个寄存器。"""
+        """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。"""
         response = await self._device.registers.read(Register.Q0)
-        raw = response.values
+        raw = response.values[:4]
         w, x, y, z = (units.quaternion_component(value) for value in raw)
         return Quaternion(w=w, x=x, y=y, z=z, raw=tuple(raw))
 
@@ -201,7 +201,7 @@ class Telemetry:
         """
         response = await self._device.registers.read(Register.CHIP_TIME_YEAR_MONTH)
         year_month, day_hour, minute_second, millisecond = (
-            _u16(value) for value in response.values
+            _u16(value) for value in response.values[:4]
         )
         return ChipTime(
             year=2000 + (year_month & 0xFF),
@@ -258,9 +258,13 @@ class Telemetry:
     async def read_serial_number(self) -> SerialNumber:
         """读 12 字节 ASCII 序列号。
 
-        序列号占 6 个寄存器，而一次读取只回 4 个，所以要读两次：``0x7F`` 与
-        ``0x82``。非 ASCII 字节以 ``\\uFFFD`` 替换而非抛异常——序列号读花了是
-        个诊断线索，不该让整个设备信息读取失败。
+        序列号占 6 个寄存器，一次读取回 8 个，所以**一趟就够**。RAY-292 之前这里读了
+        两次（``0x7F`` 与 ``0x82``），因为
+        :data:`~wt901.protocol.registers.REGISTERS_PER_RESPONSE` 当时错写成 4；第二趟
+        是白跑的，而寄存器读与 ``0x61`` 实时流抢同一条链路。
+
+        非 ASCII 字节以 ``\\uFFFD`` 替换而非抛异常——序列号读花了是个诊断线索，不该
+        让整个设备信息读取失败。
 
         **全零的回读不是一个空序列号，是一次读不出内容的读取。**
         :attr:`SerialNumber.value` 此时为 ``None``，只有 ``raw`` 可用。这不是假想
@@ -272,9 +276,8 @@ class Telemetry:
         不可信的 MAC 毫无用处，所以那里直接抛异常。序列号是设备信息，「它读出来是
         全零」这件事本身就是诊断线索，值得原样交出来，与 :class:`Battery` 同理。
         """
-        first = await self._device.registers.read(Register.SERIAL_NUMBER)
-        second = await self._device.registers.read(Register.SERIAL_NUMBER + 3)
-        words = list(first.values[:3]) + list(second.values[: SERIAL_NUMBER_WORDS - 3])
+        response = await self._device.registers.read(Register.SERIAL_NUMBER)
+        words = response.values[:SERIAL_NUMBER_WORDS]
 
         payload = b"".join(_u16(word).to_bytes(2, "little") for word in words)
         value: str | None = None

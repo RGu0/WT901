@@ -13,13 +13,12 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import UnsupportedRegisterError
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import (
     AlgorithmMode,
     Bandwidth,
@@ -33,15 +32,6 @@ UNLOCK = bytes.fromhex("ffaa6988b5")
 SAVE = bytes.fromhex("ffaa000000")
 HORIZONTAL = bytes.fromhex("ffaa230000")
 VERTICAL = bytes.fromhex("ffaa230100")
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -130,7 +120,7 @@ async def test_read_mounting_returns_raw_code() -> None:
     """读回原始 int：设备上可能存着上位机软件设过的、本库未登记的值。"""
     device, transport = await _opened()
     task = asyncio.get_running_loop().create_task(device.registers.read_mounting())
-    await _answer(transport, Register.MOUNTING, (1, 0, 0, 0))
+    await _answer(transport, Register.MOUNTING, registers(1))
     assert await task == 1
     await device.close()
 

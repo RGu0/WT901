@@ -116,8 +116,20 @@ class Register(IntEnum):
 UNLOCK_KEY = 0xB588
 """写入 :attr:`Register.KEY` 的解锁魔数。"""
 
-REGISTERS_PER_RESPONSE = 4
-"""一次读请求的回帧携带的寄存器个数——这是协议固定的，不是可选的。"""
+REGISTERS_PER_RESPONSE = 8
+"""一次读请求的回帧携带的寄存器个数——这是协议固定的，不是可选的。
+
+**曾经写作 4，那是错的。** 2026-08-27 于 WT901BLE67 实测（``tools/probe_register_width.py``，
+证据 ``ray-292/register-response-width/acceptance/``）：读 ``0x2E`` 的应答里，第 5、6 个
+位置解出的分/秒与毫秒（``0x32``/``0x33``）夹在前后两次直读 ``0x30`` 的结果之间；读 ``0x3A``
+的应答第 7 个位置（``0x40``）是 30.04 °C，与直读 ``0x40`` 的 30.03 °C 相符。两处都落在
+原先被丢弃的那 8 个字节里，各测 3 轮全部成立。
+
+帧长本来就算得出来：负载 18 字节 = 2 字节起始地址 + 16 字节寄存器区 = 8 个寄存器，
+按 4 解会有 8 个字节没有说法。``decode_register_response`` 当时用 ``unpack_from`` 只取前
+4 个，多出来的部分被静默丢弃，所以这个差异一直没暴露——**离线测试永远发现不了它**，
+构造帧的测试工具与被测代码用的是同一个错误常量。
+"""
 
 MAG_START = Register.HX
 QUATERNION_START = Register.Q0

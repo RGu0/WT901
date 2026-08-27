@@ -11,23 +11,15 @@ import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import TransportTimeoutError, UnsupportedRegisterError
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
+from wt901.protocol.frames import HEADER, FrameFlag
 from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 from wt901.transport.memory import MemoryTransport
 
 UNLOCK = bytes.fromhex("ffaa6988b5")
 SAVE = bytes.fromhex("ffaa000000")
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 def data_frame() -> bytes:
@@ -58,15 +50,16 @@ async def _answer(transport: MemoryTransport, start: int, values: tuple[int, ...
 # ----- 读事务 --------------------------------------------------------------
 
 
-async def test_read_returns_four_consecutive_registers() -> None:
-    """一次回帧固定携带 4 个寄存器，这是协议决定的。"""
+async def test_read_returns_eight_consecutive_registers() -> None:
+    """一次回帧固定携带 8 个寄存器，这是协议决定的（RAY-292 真机核实）。"""
     device, transport = await _opened()
+    values = (11, 22, 33, 44, 55, 66, 77, 88)
     task = asyncio.get_running_loop().create_task(device.registers.read(Register.HX))
-    await _answer(transport, Register.HX, (11, 22, 33, 44))
+    await _answer(transport, Register.HX, values)
     response = await task
 
     assert response.start_register == Register.HX
-    assert response.values == (11, 22, 33, 44)
+    assert response.values == values
     assert transport.writes[0] == bytes.fromhex("ffaa273a00")
     await device.close()
 
@@ -76,8 +69,8 @@ async def test_read_value_picks_the_requested_register() -> None:
     task = asyncio.get_running_loop().create_task(
         device.registers.read_value(Register.HZ)
     )
-    # 请求 0x3C，设备回的是以 0x3C 起始的四个。
-    await _answer(transport, Register.HZ, (7, 8, 9, 10))
+    # 请求 0x3C，设备回的是以 0x3C 起始的八个。
+    await _answer(transport, Register.HZ, (7, 8, 9, 10, 11, 12, 13, 14))
     assert await task == 7
     await device.close()
 
@@ -88,14 +81,15 @@ async def test_unrelated_register_frames_do_not_resolve_the_request() -> None:
     task = asyncio.get_running_loop().create_task(device.registers.read(Register.Q0))
 
     await asyncio.sleep(0)
-    transport.feed(register_frame(Register.HX, (1, 2, 3, 4)))  # 无关地址
+    transport.feed(register_frame(Register.HX, (1, 2, 3, 4, 5, 6, 7, 8)))  # 无关地址
     transport.feed(data_frame())  # 实时数据帧
     await asyncio.sleep(0)
     assert not task.done()
 
-    transport.feed(register_frame(Register.Q0, (100, 200, 300, 400)))
+    answer = (100, 200, 300, 400, 500, 600, 700, 800)
+    transport.feed(register_frame(Register.Q0, answer))
     response = await task
-    assert response.values == (100, 200, 300, 400)
+    assert response.values == answer
     await device.close()
 
 
@@ -114,12 +108,12 @@ async def test_late_response_after_timeout_is_ignored() -> None:
     with pytest.raises(TransportTimeoutError):
         await device.registers.read(Register.HX)
 
-    transport.feed(register_frame(Register.HX, (1, 2, 3, 4)))  # 迟到
+    transport.feed(register_frame(Register.HX, (1, 2, 3, 4, 5, 6, 7, 8)))  # 迟到
     await asyncio.sleep(0)
 
     task = asyncio.get_running_loop().create_task(device.registers.read(Register.HX))
-    await _answer(transport, Register.HX, (9, 9, 9, 9))
-    assert (await task).values == (9, 9, 9, 9)
+    await _answer(transport, Register.HX, (9,) * 8)
+    assert (await task).values == (9,) * 8
     await device.close()
 
 
@@ -139,7 +133,7 @@ async def test_concurrent_reads_of_same_register_serialize() -> None:
             for command in transport.writes[answered:]:
                 answered += 1
                 if len(command) == 5 and command[2] == Register.READADDR:
-                    transport.feed(register_frame(command[3], (1, 2, 3, 4)))
+                    transport.feed(register_frame(command[3], (1, 2, 3, 4, 5, 6, 7, 8)))
             await asyncio.sleep(0.001)
 
     serving = loop.create_task(serve())
@@ -151,7 +145,7 @@ async def test_concurrent_reads_of_same_register_serialize() -> None:
     finally:
         serving.cancel()
 
-    assert first.values == second.values == (1, 2, 3, 4)
+    assert first.values == second.values == (1, 2, 3, 4, 5, 6, 7, 8)
     # 两个读各自发了一条指令，不是共用一次响应。
     reads = [w for w in transport.writes if len(w) == 5 and w[2] == Register.READADDR]
     assert len(reads) == 2
@@ -160,7 +154,7 @@ async def test_concurrent_reads_of_same_register_serialize() -> None:
 
 async def test_response_for_nobody_is_not_an_error() -> None:
     device, transport = await _opened()
-    transport.feed(register_frame(Register.TEMPERATURE, (2350, 0, 0, 0)))
+    transport.feed(register_frame(Register.TEMPERATURE, (2350,) + (0,) * 7))
     await asyncio.sleep(0)
     assert device.stats.register_frames == 1
     await device.close()
@@ -242,7 +236,7 @@ async def test_read_back_returns_raw_code() -> None:
     """设备上可能存着本库尚未核实的档位，读回时不该抛异常。"""
     device, transport = await _opened()
     task = asyncio.get_running_loop().create_task(device.registers.read_output_rate())
-    await _answer(transport, Register.RRATE, (0x0B, 0, 0, 0))  # 未核实的档位
+    await _answer(transport, Register.RRATE, registers(0x0B))  # 未核实的档位
     assert await task == 0x0B
     await device.close()
 

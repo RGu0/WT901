@@ -13,13 +13,12 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 
 import pytest
 
+from conftest import register_frame, registers
 from wt901.device import WT901Device
 from wt901.errors import TransportTimeoutError
-from wt901.protocol.frames import FRAME_LENGTH, HEADER, FrameFlag
 from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 from wt901.transport.ble import BleTransport
 from wt901.transport.memory import MemoryTransport
@@ -31,15 +30,6 @@ POLLED_REGISTERS = (
     Register.POWER,
 )
 """TelemetryPoller 启动瞬间会同时读的四个寄存器——正是触发真机挂起的组合。"""
-
-
-def register_frame(start: int, values: tuple[int, ...]) -> bytes:
-    body = (
-        bytes([HEADER, FrameFlag.REGISTER])
-        + struct.pack("<H", start)
-        + struct.pack("<4h", *values)
-    )
-    return body.ljust(FRAME_LENGTH, b"\x00")
 
 
 async def _opened() -> tuple[WT901Device, MemoryTransport]:
@@ -84,10 +74,10 @@ async def test_concurrent_reads_all_resolve_without_crosstalk() -> None:
     device, transport = await _opened()
     device.registers.read_timeout = 1.0
     answers = {
-        Register.HX: (11, 12, 13, 14),
-        Register.Q0: (21, 22, 23, 24),
-        Register.TEMPERATURE: (31, 32, 33, 34),
-        Register.POWER: (41, 42, 43, 44),
+        Register.HX: registers(11, 12, 13, 14),
+        Register.Q0: registers(21, 22, 23, 24),
+        Register.TEMPERATURE: registers(31, 32, 33, 34),
+        Register.POWER: registers(41, 42, 43, 44),
     }
 
     async def serve() -> None:
