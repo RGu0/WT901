@@ -142,11 +142,15 @@ async def test_settings_order_matches_the_adaptation_document() -> None:
 
     本库覆盖其中的 ②③④⑥（① 解锁与 ⑦ 保存由每次写事务自带，⑤ 是 `0x96`，走通用
     具名写入）。顺序写在 settings() 里，这条测试防止后来的人调换它而不自知。
+
+    这里关心的是**顺序**。逐字节比对四条指令、以及第 ③ 步确实是文档要的 `0x03`，
+    在 `test_bandwidth_42hz.py` 里（RAY-298 之前那一档还不存在，这条测试只能拿
+    `HZ_20` 顶替，与适配文档对不上）。
     """
     device, transport = await _opened()
     async with device.registers.settings() as settings:
         settings.output_rate = ReturnRate.HZ_200
-        settings.bandwidth = Bandwidth.HZ_20
+        settings.bandwidth = Bandwidth.HZ_42
         settings.algorithm = AlgorithmMode.SIX_AXIS
         settings.mounting = Mounting.HORIZONTAL
     assert transport.writes == [
@@ -154,7 +158,7 @@ async def test_settings_order_matches_the_adaptation_document() -> None:
         bytes.fromhex("ffaa030b00"),
         SAVE,
         UNLOCK,
-        bytes.fromhex("ffaa1f0400"),
+        bytes.fromhex("ffaa1f0300"),
         SAVE,
         UNLOCK,
         bytes.fromhex("ffaa240100"),

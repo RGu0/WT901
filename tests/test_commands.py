@@ -100,16 +100,19 @@ def test_out_of_range_value_is_rejected(value: int) -> None:
 
 
 def test_only_verified_rate_and_bandwidth_values_exist() -> None:
-    """未在真机核实的档位不进枚举——写入未知编码可能让设备进入未知状态。
+    """未登记的档位不进枚举——写入未知编码可能让设备进入未知状态。
 
     速率档位于 2026-08-18 在 WT901BLE67 上逐档实测（`tools/probe_rates.py`）。
     `0x0A` 被有意排除：通用编码表标它 125 Hz，实测却是 99.29 Hz，与 `0x09` 几乎
     相同；同一次探测里 `0x0B` 跑到 198 Hz，所以不是链路带宽不足。
+
+    **带宽三档的情形不同，别把这条测试读成「带宽也逐档实测过」**：三个标称值全部
+    来自维特通用编码表，本库一个都没坐实（RAY-298 的自校验没过）。这里钉住的只是
+    「放行哪三个编码」，理由是防误写，见 `Bandwidth` 文档。
     """
     assert {int(rate) for rate in ReturnRate} == {0x06, 0x07, 0x08, 0x09, 0x0B}
     assert 0x0A not in {int(rate) for rate in ReturnRate}
-    # 带宽尚未逐档探测，仍只开放官方示例演示过的两档。
-    assert {int(bandwidth) for bandwidth in Bandwidth} == {0x00, 0x04}
+    assert {int(bandwidth) for bandwidth in Bandwidth} == {0x00, 0x03, 0x04}
 
 
 def test_verified_rate_commands_match_expected_bytes() -> None:
