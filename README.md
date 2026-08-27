@@ -20,6 +20,12 @@ dependencies = ["wt901"]
 wt901 = { git = "https://github.com/RGu0/WT901.git", tag = "v0.2.0" }
 ```
 
+两段分开写是有理由的：`dependencies` 里只放普通包名，来源交给 `[tool.uv.sources]`。
+写成 direct reference（`"wt901 @ git+..."`）会被**烘进构建出的 wheel 元数据**，拿到
+wheel 的人就得到一个改不掉的 git URL，不少索引还直接拒收。
+
+不用 uv 时才退回 direct reference，且**只适合装成应用、不再被别人依赖的项目**：
+
 ```bash
 pip install "wt901 @ git+https://github.com/RGu0/WT901.git@v0.2.0"
 ```
