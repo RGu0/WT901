@@ -309,3 +309,17 @@ def test_docstring_records_the_concurrency_hazard() -> None:
     assert doc is not None
     assert "RAY-177" in doc
     assert "future" in doc
+
+
+def test_poller_docstring_covers_the_fifth_item() -> None:
+    """类 docstring 曾写「四项」且「读取失败时属性保持不变」——对 rssi 两句都不成立。
+
+    钉住这两句不回退：漏更新它，读的人会以为 `rssi` 也保持上一次的值，而那正是
+    这一项刻意不做的事。
+    """
+    doc = TelemetryPoller.__doc__
+    assert doc is not None
+    assert "四项里每一项" not in doc
+    assert "rssi" in doc
+    # 必须写明 rssi 的失败处置与其余四项不同。
+    assert "被写成" in doc
