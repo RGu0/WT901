@@ -21,6 +21,13 @@
 
 重连后设备的校准状态因此是**未知**的：本库不重放，也无从查询（``0x01`` 只写）。
 需要确定状态就重新校准一次。
+
+``0x01`` 的另外两个官方取值（Z 轴角度归零 ``0x04``、设置角度参考 ``0x08``，RAY-308
+补齐）**同样是动作**，同样 ``remember=False``：重放一次归零就是在重连那一刻的朝向上
+重定零点，与重放加计校准是同一种错。
+
+⚠ **这两条本库都没有在真机上验证过**：字节构造照协议文档写死并有离线测试，设备收到
+之后到底做了什么没有实测数据。
 """
 
 from __future__ import annotations
@@ -31,7 +38,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from wt901.protocol.registers import CalibrationMode, Register
+from wt901.errors import ConfigurationError
+from wt901.protocol.registers import AlgorithmMode, CalibrationMode, Register
 
 if TYPE_CHECKING:
     from wt901.device import WT901Device
@@ -73,6 +81,61 @@ class Calibration:
         """
         await self._device.registers.write(
             Register.CALSW, CalibrationMode.ACCELERATION, remember=False
+        )
+
+    async def zero_z_axis(self) -> None:
+        """把当前朝向定为航向角（Z 轴）零位。
+
+        ⚠ **只在 6 轴算法下生效。** 协议文档：「发送这个指令前需要先切换六轴算法，
+        才可以生效。」9 轴模式下航向由磁力计给出绝对参考，没有「归零」可言——**设备
+        收到这条指令不会报错，也不会做任何事**。
+
+        所以本方法**先读回 ``0x24`` 确认**，不是 9 轴才发指令。这多花一次 BLE 往返
+        （寄存器读与 ``0x61`` 实时流抢同一条链路），换的是把一条静默失效的指令挡在
+        外面。本库对这类「不报错但没生效」一贯选择多付代价：`Register.MOUNTING`、
+        `AlgorithmMode` 的具名要求都是同一个理由。
+
+        读回的是设备的**真实**状态而不是本库记得的状态——设备可能被上位机软件改过。
+
+        想跳过这次检查，用通用写入::
+
+            await device.registers.write(Register.CALSW, CalibrationMode.ZERO_Z_AXIS,
+                                         remember=False)
+
+        ``remember=False``：归零是动作不是配置，不参与重连重放。理由见模块文档末尾
+        ——重放一次归零，等于在重连那一刻的朝向上重定零点。
+
+        ⚠ **本库没有在真机上验证过这条指令。** 字节构造照协议文档写死并有离线测试，
+        但设备收到之后到底做了什么没有实测数据（``ray-308``）。
+        """
+        algorithm = await self._device.registers.read_algorithm()
+        if algorithm != AlgorithmMode.SIX_AXIS:
+            raise ConfigurationError(
+                f"Z 轴角度归零只在 6 轴算法下生效，设备当前 ALGORITHM(0x24)="
+                f"0x{algorithm:04X}。先 set_algorithm(AlgorithmMode.SIX_AXIS)，"
+                "或用 registers.write() 绕过这次检查。"
+            )
+        await self._device.registers.write(
+            Register.CALSW, CalibrationMode.ZERO_Z_AXIS, remember=False
+        )
+
+    async def set_angle_reference(self) -> None:
+        """把当前姿态定为三轴角度的零点。
+
+        与 :meth:`calibrate_acceleration` 的区别值得说清，两者都「拿当前状态当基准」
+        但标定的不是一回事：
+
+        - 加计校准标定**传感器零位**，要求设备**水平静置**，标的是重力方向。
+        - 这一条标定**姿态参考**，把当前姿态当零点，**与设备水不水平无关**。
+
+        协议文档注明发送后需再发保存指令；本库的写事务本来就以保存收尾，自动满足。
+
+        ``remember=False``：与其它校准一致，是动作不是配置。
+
+        ⚠ **本库没有在真机上验证过这条指令。**
+        """
+        await self._device.registers.write(
+            Register.CALSW, CalibrationMode.ANGLE_REFERENCE, remember=False
         )
 
     async def start_field_calibration(self) -> None:

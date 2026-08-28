@@ -76,6 +76,7 @@ from wt901.protocol.registers import (
     Mounting,
     Register,
     ReturnRate,
+    SaveAction,
 )
 from wt901.telemetry import (
     Battery,
@@ -124,6 +125,7 @@ __all__ = [
     "RegisterAccess",
     "RegisterResponse",
     "ReturnRate",
+    "SaveAction",
     "SerialNumber",
     "Settings",
     "Telemetry",

@@ -18,6 +18,8 @@ from wt901.protocol.frames import (
     decode_register_response,
 )
 from wt901.protocol.registers import (
+    BLUETOOTH_NAME_PREFIX,
+    MAX_BLUETOOTH_NAME_SUFFIX_BYTES,
     UNLOCK_KEY,
     AlgorithmMode,
     Bandwidth,
@@ -25,11 +27,14 @@ from wt901.protocol.registers import (
     Mounting,
     Register,
     ReturnRate,
+    SaveAction,
 )
 
 __all__ = [
+    "BLUETOOTH_NAME_PREFIX",
     "FRAME_LENGTH",
     "HEADER",
+    "MAX_BLUETOOTH_NAME_SUFFIX_BYTES",
     "UNLOCK_KEY",
     "AlgorithmMode",
     "Bandwidth",
@@ -41,6 +46,7 @@ __all__ = [
     "Register",
     "RegisterResponse",
     "ReturnRate",
+    "SaveAction",
     "commands",
     "decode_data_frame",
     "decode_register_response",

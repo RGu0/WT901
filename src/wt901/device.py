@@ -20,6 +20,7 @@ from wt901.config import RegisterAccess
 from wt901.discovery import DiscoveredDevice
 from wt901.errors import ConfigurationError, TransportError
 from wt901.models import ImuSample
+from wt901.protocol import commands
 from wt901.protocol.frames import (
     FrameDecoder,
     FrameFlag,
@@ -375,6 +376,48 @@ class WT901Device:
     async def write(self, data: bytes) -> None:
         """直接向设备写字节。供上层的指令构造使用。"""
         await self._transport.write(data)
+
+    async def set_bluetooth_name(self, name: str) -> None:
+        """改设备的蓝牙广播名。``name`` 必须以 ``WT`` 开头，之后最多 14 字节 ASCII。
+
+        为什么放在设备上而不是 ``device.registers``：**这不是寄存器写入**。它的封装
+        是 ``WT`` + 名称 + ``\r\n``（变长），不走「解锁 → 写 → 保存」，也没有对应
+        的寄存器地址可读回。放进 :class:`~wt901.config.RegisterAccess` 会让那个类的
+        名字变成一句假话。
+
+        ⚠ **改名后必须重启才生效**，官方原文：「更改名称后，需要手动重启硬件，或者用
+        软件下发重启命令，然后从新搜索连接设备。」下发重启用
+        :meth:`~wt901.config.RegisterAccess.reboot`::
+
+            await device.set_bluetooth_name("WTLeftFoot")
+            await device.registers.reboot()   # 链路会断开
+            # 设备回来后要按**新名字**重新搜索
+
+        ⚠ **改名不是设备自报的身份，不能替代 :meth:`~wt901.telemetry.Telemetry.read_mac`。**
+        这一条要紧到值得单独说：同批设备广播名重复正是 RAY-279 立项的理由之一，改名
+        看起来能解决它，但**解决不了**——
+
+        - 名字是**主机写进去的**，不是设备自报的。谁都可能改，包括维特的上位机软件；
+          两台设备被改成同一个名字，本库无从发现。
+        - 名字**不参与任何校验**。绑定键靠的是「这个值只可能属于这台设备」，而名字
+          没有这个性质。
+        - 改名**不可逆地丢掉了找回设备的旧路径**：改完只能靠新名字或 MAC 找它。
+
+        所以：要做跨主机稳定的设备身份绑定，用 ``read_mac()``。改名的正当用途是**给
+        人看**——现场分辨哪台是左脚哪台是右脚，仅此而已。
+
+        ⚠ **本库没有在真机上验证过这条指令。** 字节构造照协议文档写死并有离线测试
+        （长度上限还能被帧长佐证：2 + 2 + 14 + 2 = 20 字节，正好用满 BLE 单次上传
+        上限），但设备收到之后到底做了什么没有实测数据（``ray-308``）。
+
+        :raises ConfigurationError: 名称不以 ``WT`` 开头、含非 ASCII 字符，或超长。
+        """
+        payload = commands.set_bluetooth_name(name)
+        # 走寄存器层那把事务锁：这条指令不是寄存器写入，但它打在**同一条 GATT 写
+        # 特征**上。两条写同时在飞会让 bleak 的 CoreBluetooth 后端永久挂起（RAY-177），
+        # 链路不管字节是什么意思。构造在锁外做——参数校验失败时不该占着锁。
+        async with self.registers.exclusive():
+            await self.write(payload)
 
     # ----- 内部 -----------------------------------------------------------
 

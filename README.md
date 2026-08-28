@@ -72,9 +72,10 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 | 分组 | 名字 |
 |---|---|
 | 发现与连接 | `scan`、`DiscoveredDevice`、`WT901Device`、`ConnectionEvent`、`ConnectionState`、`ReconnectPolicy`、`DeviceStats`、`OutputMode` |
-| 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效）、`Mounting`（安装方向，写默认值也别省） |
+| 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效）、`Mounting`（安装方向，写默认值也别省；`VERTICAL` **必须 Y 轴箭头朝上**）、`SaveAction` |
 | 遥测 | `Telemetry`（`device.telemetry`；`read_mac()` 是唯一可跨主机持久化的设备身份）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery`、`SerialNumber` |
 | 校准 | `Calibration`（`device.calibration`）、`CalibrationMode` |
+| 设备级动作 | `registers.restore_defaults()`（打回出厂并清空重放记录）、`registers.reboot()`（会断链）、`registers.exclusive()`（独占 GATT 写特征）、`device.set_bluetooth_name()`（**不是设备身份，别拿它替代 `read_mac()`**）|
 | 多设备 | `merge`、`MergedStream`、`MergeStats` |
 | 数据模型 | `ImuSample`、`Vec3`、`Euler`、`Quaternion`、`MagneticField`、`DeviceInfo`、`RawImuCounts` |
 | 协议层（纯函数、零 I/O） | `wt901.protocol`、`Frame`、`FrameDecoder`、`FrameFlag`、`RegisterResponse` |
@@ -83,6 +84,11 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 
 协议细节（GATT UUID、帧格式、完整寄存器表、上游资料缺陷清单）见
 [`docs/protocol.md`](docs/protocol.md)。
+
+> ⚠ **「设备级动作」那一行的三条、以及 `CalibrationMode` 的 `ZERO_Z_AXIS` /
+> `ANGLE_REFERENCE`，本库一条都没有在真机上验证过。** 字节构造照官方协议文档写死并有
+> 离线测试，但设备收到之后到底做了什么没有实测数据。本库自己吃过这个亏——见下面
+> 「`0x0A` 被有意排除」。**字节构造正确与设备行为符合预期是两件事。**
 
 ## 平台差异
 
