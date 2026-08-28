@@ -358,12 +358,17 @@ async def test_out_of_order_counts_every_sample_below_the_high_water_mark(
     await right.close()
 
 
-async def test_a_zero_latency_budget_waits_for_nothing(clock: Clock) -> None:
-    """``max_latency=0`` 是合法的，含义是「一个样本都不等」。
+async def test_a_zero_latency_budget_is_accepted_and_reports_itself(
+    clock: Clock,
+) -> None:
+    """``max_latency=0`` 不被拒绝，且那段输出如实记进 ``emitted_while_stalled``。
 
-    构造函数只拒绝负数，所以 ``0`` 会被接受；它实际上等于不归并。钉住这条是因为
-    文档现在明写了这个含义，而「想要等齐请传 ``None``」这句提醒只有在 ``0`` 真的
-    不等的前提下才成立。
+    构造函数只拒负数，所以 ``0`` 会被接受。文档说它「一个样本都不等」，等于不归并；
+    这里钉住的是那句话里可被断言的一半——**它不挂起，而且不假装自己在归并**。
+
+    「真的一秒都没等」没有被断言：唯一的区别是 ``asyncio.wait`` 的超时传 0 还是传
+    一个小正数，要把它们分开只能靠计时，那样的测试会在慢机器上随机变红。所以这条
+    测试不声称验证了它。
     """
     (left, _left_t), (right, right_t) = await _pair()
     clock.now = 1.0
