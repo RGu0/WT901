@@ -412,7 +412,12 @@ class WT901Device:
 
         :raises ConfigurationError: 名称不以 ``WT`` 开头、含非 ASCII 字符，或超长。
         """
-        await self.write(commands.set_bluetooth_name(name))
+        payload = commands.set_bluetooth_name(name)
+        # 走寄存器层那把事务锁：这条指令不是寄存器写入，但它打在**同一条 GATT 写
+        # 特征**上。两条写同时在飞会让 bleak 的 CoreBluetooth 后端永久挂起（RAY-177），
+        # 链路不管字节是什么意思。构造在锁外做——参数校验失败时不该占着锁。
+        async with self.registers.exclusive():
+            await self.write(payload)
 
     # ----- 内部 -----------------------------------------------------------
 

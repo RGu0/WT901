@@ -277,6 +277,41 @@ async def test_set_bluetooth_name_writes_the_raw_command() -> None:
     await device.close()
 
 
+async def test_set_bluetooth_name_serialises_against_register_traffic() -> None:
+    """改名指令必须与寄存器事务抢同一把锁。
+
+    它不是寄存器写入，但**打在同一条 GATT 写特征上**——两条写同时在飞会让 bleak 的
+    CoreBluetooth 后端永久挂起（RAY-177 真机确认）。「它不是寄存器写入」不是绕过那
+    把锁的理由：链路不管字节是什么意思。
+
+    离线测试测不出那个挂起（`MemoryTransport.write` 立即返回），所以这里断言的是
+    **拿了锁**：先占住事务锁，改名就必须等；放开后它才发得出去。
+    """
+    device, transport = await _opened()
+
+    async with device.registers.exclusive():
+        task = asyncio.ensure_future(device.set_bluetooth_name("WTLeftFoot"))
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert transport.writes == [], "持锁期间不该有任何字节发出"
+
+    await task
+    assert transport.writes == [b"WTWTLeftFoot\r\n"]
+    await device.close()
+
+
+async def test_bad_bluetooth_name_is_rejected_without_taking_the_lock() -> None:
+    """参数校验失败时不该占着那把锁——构造在锁外做。"""
+    device, transport = await _opened()
+
+    async with device.registers.exclusive():
+        with pytest.raises(ConfigurationError):
+            await device.set_bluetooth_name("LeftFoot")
+
+    assert transport.writes == []
+    await device.close()
+
+
 def test_bluetooth_name_docs_refuse_to_be_read_as_an_identity_solution() -> None:
     """改名**不是设备自报的身份**，不能替代 `read_mac()`。
 

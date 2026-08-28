@@ -367,6 +367,24 @@ class RegisterAccess:
 
     # ----- 设备级动作（不是配置） -----------------------------------------
 
+    @asynccontextmanager
+    async def exclusive(self) -> AsyncIterator[None]:
+        """独占这条 GATT 特征。
+
+        **不属于寄存器事务、但同样要串行化的下行指令**用它——目前只有
+        :meth:`~wt901.device.WT901Device.set_bluetooth_name`（那条指令不是寄存器
+        写入，封装完全不同）。
+
+        为什么必须串行：所有下行字节都打在**同一条 GATT 写特征**上，而 bleak 的
+        CoreBluetooth 后端对同一特征只维护一个待完成写入的 future——两条写同时在飞，
+        其中一个永远得不到回调，**永久挂起**。这是真机上确认过的（RAY-177），离线
+        测试发现不了，因为 ``MemoryTransport.write`` 立即返回。
+
+        「它不是寄存器写入」不是绕过这把锁的理由：链路不管字节是什么意思。
+        """
+        async with self._transaction_lock:
+            yield
+
     async def _send_save_action(self, action: SaveAction) -> None:
         """按官方指令流程发一条 ``0x00`` 指令：解锁 → 延时 → 写。
 
@@ -387,8 +405,10 @@ class RegisterAccess:
         """**把设备打回出厂配置并保存**（``FF AA 00 01 00``）。
 
         这不是「撤销我这次的改动」，是抹掉设备 flash 里的**全部**配置——包括别的
-        软件写进去的。回传速率会回到 10 Hz，带宽回到 ``0x04``，安装方向与算法一并
-        复位。
+        软件写进去的。协议文档给出默认值的两项会回到文档值（回传速率 ``0x06`` =
+        10 Hz、带宽 ``0x0004``）；**安装方向与算法的出厂默认值本库没有核实过**
+        （见 :attr:`Register.MOUNTING`），所以「复位之后它们是什么」这句话本库答不了
+        ——只能说它们不再是你写进去的值。
 
         **它同时清空本对象的 ``applied_writes``。** 不清的话，下一次自动重连会把
         刚刚被抹掉的配置重新放回去——调用方看到的是「复位了，过一会儿又变回来了」，

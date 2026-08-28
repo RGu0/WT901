@@ -75,7 +75,7 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 | 配置 | `RegisterAccess`（`device.registers`）、`Settings`、`Register`、`ReturnRate`、`Bandwidth`、`AlgorithmMode`（`SIX_AXIS` 才能让 Z 轴角度归零生效）、`Mounting`（安装方向，写默认值也别省；`VERTICAL` **必须 Y 轴箭头朝上**）、`SaveAction` |
 | 遥测 | `Telemetry`（`device.telemetry`；`read_mac()` 是唯一可跨主机持久化的设备身份）、`TelemetryPoller`、`PollerConfig`、`ChipTime`、`Battery`、`SerialNumber` |
 | 校准 | `Calibration`（`device.calibration`）、`CalibrationMode` |
-| 设备级动作 | `registers.restore_defaults()`（打回出厂并清空重放记录）、`registers.reboot()`（会断链）、`device.set_bluetooth_name()`（**不是设备身份，别拿它替代 `read_mac()`**）|
+| 设备级动作 | `registers.restore_defaults()`（打回出厂并清空重放记录）、`registers.reboot()`（会断链）、`registers.exclusive()`（独占 GATT 写特征）、`device.set_bluetooth_name()`（**不是设备身份，别拿它替代 `read_mac()`**）|
 | 多设备 | `merge`、`MergedStream`、`MergeStats` |
 | 数据模型 | `ImuSample`、`Vec3`、`Euler`、`Quaternion`、`MagneticField`、`DeviceInfo`、`RawImuCounts` |
 | 协议层（纯函数、零 I/O） | `wt901.protocol`、`Frame`、`FrameDecoder`、`FrameFlag`、`RegisterResponse` |
