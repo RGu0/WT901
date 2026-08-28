@@ -5,9 +5,9 @@
 
 * **协议文档** —— 维特官方《蓝牙5.0通讯协议》，本型号自己的协议文档。
 * **官方 SDK** —— `WITMOTION/WitBluetooth_BWT901BLE5_0`，钉住 commit
-  ``9efaab0fdd6a06dc807bf80402e58aa91b431c6f``（2024-09-19）的 C# / Android /
-  Python / iOS 实现（``Form1.cs``、``Bwt901bleProcessor.java``、
-  ``DipSensorMagHelper.java``）。
+  ``9efaab0fdd6a06dc807bf80402e58aa91b431c6f``（2024-09-19）。比对覆盖 C# 示例
+  ``Form1.cs``、Android ``DipSensorMagHelper.java``、Python 与 iOS 协议层；
+  **未覆盖 Unity_C# 与 Windows_C# 的 WitSdk 主体**，见 `docs/protocol.md` §11。
 
 **这里以前写的是「来源：官方 SDK」，那句话覆盖不了本模块的一半。** SDK 全量触及的
 只有读 ``0x03`` ``0x2E`` ``0x3A`` ``0x40`` ``0x51`` ``0x64`` ``0x72`` 与写 ``0x00``

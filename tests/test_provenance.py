@@ -76,10 +76,16 @@ _DOC_ONLY = (
 
 
 def test_sdk_touched_set_matches_the_registers_the_library_exposes() -> None:
-    """这份差集是本次比对的结论本身，写死在这里好过散落在文字里。
+    """把「本库是 SDK 的超集」这个结论写成可执行的断言。
 
-    若将来补齐 Unity_C# / Windows_C# 的 WitSdk 主体后差集变了，这个测试会失败——
-    那正是应该回头改文档的时刻。
+    它挡的是**这个结论被悄悄推翻**：谁要是删掉或改掉一个 SDK 也用的地址（比如
+    :attr:`Register.MAGTYPE`），`docs/protocol.md` §11 那句「本库是超集」就不再成立，
+    而纯文字写下来的结论不会有任何东西提醒他。
+
+    它**挡不住**的两件事，说清楚免得误以为有保护：``_SDK_TOUCHED`` 是照 2026-08-28
+    那次扫描手抄的常量，补齐 Unity_C# / Windows_C# 的 WitSdk 主体后得连同文档一起
+    手改；往 :class:`Register` 里加新地址也不会失败——新地址只是落进
+    ``only_in_library`` 而已。
     """
     library = {int(member) for member in Register}
     assert _SDK_TOUCHED <= library, "SDK 触及的地址本库应当全部有，否则「超集」不成立"
