@@ -255,3 +255,59 @@ def test_default_read_retries_value_is_unchanged() -> None:
     """本 scope 不改这个值——改它同样需要实测支撑，而实测还没做。"""
     assert DEFAULT_READ_RETRIES == 2
     assert DEFAULT_READ_TIMEOUT == 0.5
+
+
+# ----- 取证脚本的设备选择 ---------------------------------------------------
+
+
+class _Found:
+    def __init__(self, address: str, rssi: int | None) -> None:
+        self.address = address
+        self.rssi = rssi
+        self.name = "WT901BLE68"
+
+
+async def test_probe_picks_the_strongest_device_not_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """台架上那台几乎总是最近的一台，而扫描结果的顺序不保证任何东西。
+
+    此前直接取 `devices[0]`：两台设备在场时选中哪台全凭运气，而连接超时的回溯里
+    完全看不出扫到了什么。
+    """
+    import tools.probe_read_retries as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        assert timeout == probe.SCAN_TIMEOUT
+        return [_Found("far", -90), _Found("near", -47)]
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    chosen = await probe.pick_device(None)
+    assert chosen is not None
+    assert chosen.address == "near"
+
+
+async def test_probe_returns_none_when_nothing_is_in_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.probe_read_retries as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        return []
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    assert await probe.pick_device(None) is None
+
+
+def test_probe_scan_timeout_matches_the_other_probes() -> None:
+    """默认 5 秒在设备刚上电或信号偏弱时常扫不到；tools/ 里其它探测脚本用 15。"""
+    import tools.probe_read_retries as probe
+
+    assert probe.SCAN_TIMEOUT == 15.0
+
+
+def test_probe_take_address() -> None:
+    from tools.probe_read_retries import take_address
+
+    assert take_address(["30", "--address", "ABC"]) == ("ABC", ["30"])
+    assert take_address(["30"]) == (None, ["30"])
