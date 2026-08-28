@@ -41,12 +41,17 @@
 ======  ==============  ====================================
 真值    估计范围        说明
 ======  ==============  ====================================
-10 Hz   11.0–13.8 Hz
-20 Hz   17.0–25.3 Hz    ``0x04`` 的标称值，用作方法自校验
-42 Hz   41.8–66.4 Hz    偏高，因为参考档的混叠抬升随频率变化
-98 Hz   无拐点          超过奈奎斯特，观测频段内看不到
-188 Hz  无拐点
+10 Hz   10.3–13.5 Hz
+20 Hz   16.8–21.5 Hz    ``0x04`` 的标称值，用作方法自校验
+42 Hz   37.8–46.7 Hz
+98 Hz   78.9–96.9 Hz    **9 组里 3 组测出了拐点，其中 78.9 Hz 落进主判据区间**
+188 Hz  无拐点          超过奈奎斯特，观测频段内看不到
 ======  ==============  ====================================
+
+**这张表是 RAY-315 用红噪声源重标定后的结果**，与此前白噪声版本不同。最要紧的差别
+在 98 Hz 那一行：白噪声下它永远测不出拐点，红噪声下它会，而且有一组落进了
+:data:`VERDICT_BAND`——**主判据在正确的噪声模型下分不开 42 与 98 Hz**。见下面「已知
+判据缺陷」。
 
 合成数据的随机种子是固定的，所以这张表可以逐字复现——它不是「跑一次看到的样子」，
 而是判据的出处。改动分析流程后 ``--self-test`` 会自己判断判据还成不成立。
@@ -54,18 +59,33 @@
 1. **方法自校验**：``R̂_0x04`` 的 −3 dB 点落在 :data:`SELF_CHECK_BAND` → 方法有效。
    区间下沿同时把真值 10 Hz 排除在外，所以这一条不只是「数量级对」。
 2. **主判据**：``R̂_0x03`` 落在 :data:`VERDICT_BAND` → 判定为 42 Hz，登记 ``HZ_42``。
-   标定表显示 10 / 20 / 98 / 188 Hz 四个相邻档位全部落在这个区间之外，所以落进去
-   只可能是 42 那一档。
+   白噪声标定下 10 / 20 / 98 / 188 Hz 四个相邻档位全部落在这个区间之外；**红噪声
+   重标定之后 98 Hz 不再全在区间外**，这一条因此已不成立，见「已知判据缺陷」。
 3. 落在区间外或无拐点 → 本固件不按维特通用表映射这个编码，**不登记**（同 ``0x0A``）。
 4. 第 1 条不过 → 方法无效，退回 Issue 描述里的方向 3。
 
-**附加门槛两条**，任一不过就重采，不做「凑合判读」：
+**附加门槛四道**，任一不过就重采，不做「凑合判读」。全部登记在 :data:`GATE_LEDGER`：
 
-- 三档采集全程 ``dropped_samples`` 与 ``resync_count`` 必须为 0。丢样在时基上留洞。
-- 通带平台必须平坦（``max/min ≤`` :data:`MAX_PLATEAU_SPREAD`）。**这一条是防环境振动的。**
-  三个滤波器都原样放行的低频成分（脚步、桌面晃动、风扇）会同时出现在分子分母里，
-  让平台里那一段的 ``R`` 冲向 1，而白噪声那部分只有 0.27——平台就被拉高，整条曲线
-  被压低，拐点估计随之左移。合成数据上，干净时平台离散 ≤1.68，掺入低频污染后达 3.2。
+- 采集全程 ``dropped_samples`` + ``resync_count`` 为 0（:data:`MAX_LINK_DEFECTS`）。
+- 每档段数 ≥ :data:`MIN_SEGMENTS`。段数决定谱估计的方差。
+- 通带平台必须平坦（``max/min ≤`` :data:`MAX_PLATEAU_SPREAD`）。防环境振动。
+- 可用动态范围 ≥ :data:`MIN_DYNAMIC_RANGE_DB`。
+
+**通则（RAY-315）：每一道预注册的门槛，标定都必须评估它**，且分不开时要拿出「该
+失败模式无害」的实测证据。来源是 RAY-304 审阅期的发现——动态范围那道门槛预注册了、
+标定也建了，却从来没拿标定数据跑过自己；补跑后发现连干净合成数据都从未接近 40 dB，
+「本方法过不了自己的门槛」在上真机之前就是可判定的，代价是用户白跑了两轮。
+``--self-test`` 现在逐条走这张台账，评估不了的必须写明理由，不得静默跳过。
+
+## 已知判据缺陷（RAY-315 重标定暴露，**未修**）
+
+1. **通带平台绝对水平那道门槛已退役。** 它的标定用的是白噪声，真机是红噪声，两轮
+   真机数据被它全部误判为「归一化基准失效、请重采」。换成红噪声之后它既分不开干净
+   与污染，要防的失败模式也不再存在。详见 :data:`PLATEAU_LEVEL_CLEAN`。
+2. **主判据在红噪声下分不开 42 与 98 Hz。** 见上面标定表。**本轮没有动
+   :data:`VERDICT_BAND`**——改判据区间是又一次判据修改，要单独确认并升需求修订。
+   它不影响任何已有结论：动态范围那道门槛在干净合成数据上就不过（14.5 dB，要求
+   ≥40 dB），本方法已经退役，主判据根本轮不到生效。
 
 ## 写入策略
 
@@ -125,8 +145,35 @@ SMOOTH_BINS = 9
 MIN_SEGMENTS = 12
 """少于这么多段就不判读：段数决定谱估计的方差，方差大了拐点就无从谈起。"""
 
+MAX_LINK_DEFECTS = 0
+"""采集期间允许的丢样 + 重同步总数。丢样在时基上留洞，而时基就是频率轴的刻度。
+
+写成常量不是为了将来放宽它——是为了让 :data:`GATE_LEDGER` 能指着它，
+好让「每一道门槛标定都必须评估」这条通则对它也生效（对它的评估结论是
+「本合成评估不了」，那也必须显式写出来，不能静默跳过）。
+"""
+
 MAX_PLATEAU_SPREAD = 2.5
-"""通带平台的 ``max/min`` 上限。合成标定：干净 ≤1.86，掺低频污染 3.2。取 2.5 让两边都有余量。"""
+"""通带平台的 ``max/min`` 上限。**这一条是防环境振动的。**
+
+门槛值 2.5 是 RAY-304 取证前预注册的，来自当时的白噪声标定（干净 ≤1.86，掺低频污染
+3.2）。RAY-315 把标定的源噪声换成红噪声之后，**这道门槛的处境变了**：
+
+============================  ==========
+条件（红噪声 α=0.99）         平台离散
+============================  ==========
+干净，真值 10–188 Hz          ≤1.72
+掺共同低频污染                1.16
+============================  ==========
+
+污染用例**不再触发它**——因为红噪声下这种共同污染根本不再扰动 R̂（平台本就在 1 附近，
+归一化基准无从被抬高）。按 :data:`GATE_LEDGER` 的通则，分不开就必须拿出「该失败模式
+无害」的实测证据：同一组种子掺污染前后 −3 dB 估计 44.4 → 42.9 Hz，相对变化 3.4%，
+在 :data:`POLLUTION_BIAS_TOLERANCE` 之内。豁免成立，门槛值**未改**。
+
+门槛留着不是因为它现在还挡得下什么，而是因为它挡的失败模式比这一个污染模型更宽
+（不是所有环境振动都是共模的），而干净数据上它有余量，留着不误报。
+"""
 
 FLOOR_BAND = (80.0, 95.0)
 """阻带地板的取值区间，Hz。
@@ -145,64 +192,50 @@ RAY-298 那一轮失败的根因就是这个量不够：曲线压到 −13 dB �
 低于它时唯一诚实的结论是「噪声底法测不出绝对赫兹数」——那也是一个完整交付。
 """
 
-MAX_PLATEAU_LEVEL = 0.40
-"""通带平台**绝对水平**的上限（归一化之前）。**只对窄档有效**，见下。
+PLATEAU_LEVEL_CLEAN = (0.75, 1.15)
+"""通带平台**绝对水平**在干净合成数据上的取值范围（红噪声 α=0.99，窄档）。
 
-干净数据下这个值很低：候选档与参考档在通带内都没被滤，但候选档的等效噪声带宽更
-窄，功率比因此明显小于 1。**接近 1 意味着归一化基准已经失效**——通常是一个共同的
-低频污染（桌面振动、手碰、缓慢漂移）同时主导了两路谱并在相除时抵消掉了，此时 R̂
-的形状不再由滤波器决定，算出来的拐点没有意义。
+**这是诊断量，不是门槛。** 它曾经是一道前置门槛（``MAX_PLATEAU_LEVEL ≤ 0.40``），
+RAY-315 把它退了下来。三条理由全部是合成标定实测出来的，不是推断：
 
-这个量此前**一直被算出来却没有被返回**（`_ratio_curve` 里的 `scale`），所以从未被
-打印过，也就从未被用作判据。
+**一、原门槛的标定用错了噪声颜色。** 干净基线 0.200–0.343 来自**白噪声**合成。参考
+档 ``0x00`` 标称 256 Hz 而采样率只有 200 Hz，白噪声里 100–256 Hz 那一段必然折回带内，
+把参考谱的低频抬高几倍，比值因此偏低。真实传感器噪声是红噪声（1/f + 环境），高频
+没那么多东西可折，参考档低频不被抬高——**平台接近 1 才是干净数据的正常值**。
+2026-08-28 两台设备各一轮，窄档实测 0.892–1.033，被这道门槛全部拦下并建议「挪到不
+振动的地方重采」。那个建议是错的，白让用户跑了两轮。
 
-0.40 这个门槛来自合成标定（30 s/档，1–3 阶各 3 组）：
+**二、换成红噪声之后，这个统计量分不开干净与污染。** 同一套合成、只改源噪声颜色
+（注入点在**器件滤波器之前**，见 :func:`_red_source`），窄档取值范围：
 
-======================  ==============
-条件                    平台绝对水平
-======================  ==============
-干净，真值 10/20/42 Hz  0.200–0.343
-掺 5 Hz 共同污染        0.439–0.560
-======================  ==============
+====================  =============  =============  =============
+源噪声                干净           掺污染 ×1      掺污染 ×10
+====================  =============  =============  =============
+白（α=0）             0.222–0.309    0.400–0.475    0.586–0.628
+红（α=0.99）          0.880–1.009    0.894–1.014    0.903–0.997
+红（α=0.999）         0.818–1.218    0.874–1.196    0.927–1.090
+====================  =============  =============  =============
 
-两侧各留约 17% 余量。**同一组污染数据的平台离散是 2.19–2.43，全部通过 ≤2.5 那道
-门槛**——这正是必须新增本判据的理由，也复现了 RAY-298 真机实测 1.59 / 1.20「离散
-合格但数据不可判读」的那一幕。
+（``--self-test`` 的「源噪声颜色对照」一节逐次复现这张表，种子固定。真机窄档实测
+0.892–1.033，落在红噪声那两行里。）
 
-.. warning::
+共同污染把比值推向 1。白噪声下平台原本在 0.27，那是 2–3 倍的抬升，分得开；红噪声下
+平台本来就在 1 附近，**没有可抬升的余量**。污染幅度加到标定用量的 10 倍仍然如此。
+所以不是「门槛取值没找对」——是这个统计量在真实噪声模型下没有分辨力，任何取值都分
+不开。
 
-   **这个标定不适用于真机，2026-08-28 两台设备各一轮全部触发本门槛（实测 0.89–1.03）。**
+**三、它要防的那个失败模式在红噪声下不再存在。** 原门槛的理由是「共同低频污染会把
+拐点估计带偏」。红噪声下实测不带偏：同一组种子，掺污染前后的 −3 dB 估计相差在
+:data:`POLLUTION_BIAS_TOLERANCE` 之内。原因同上——平台本来就在 1 附近，归一化基准
+无从被抬高。（白噪声下则确实被带偏：同样的污染把真值 42 Hz 读成 8.1–17.7 Hz。）
 
-   干净基线 0.200–0.343 来自**白噪声**合成：参考档 ``0x00`` 在 200 Hz 采样下把
-   100–256 Hz 折回带内，把参考谱的低频抬高了几倍，比值因此偏低。真实传感器噪声是
-   红噪声（1/f + 环境），高频没那么多东西可折，参考档低频不被抬高——**平台接近 1
-   才是真机干净数据的正常值**。
+保留计算与打印，是因为这个数**仍然有信息**：远大于 1 说明候选档在通带内比参考档还
+有劲，那在物理上讲不通，是分析或数据出了别的问题的信号。但它不再拦人。
 
-   审阅期复核证实了这个解释：同一套合成只把噪声颜色注入到**器件滤波器之前**，白噪声
-   给出 0.212–0.243，红噪声 α=0.99 给出 0.830–0.997、α=0.999 给出 0.889–1.058——后者
-   正是真机实测的区间。下一轮重标定用 α≈0.99–0.999。
-   （复核时第一次把红化加在合成**之后**，结果三位小数完全不变：同一线性滤波器同时
-   作用于候选与参考，相除时精确抵消。验证关于 R̂ 的假设，扰动必须只作用于单路。）
+.. note::
 
-   数据本身也反驳了本门槛的理由（「R̂ 的形状不再由滤波器决定」）：那一轮里形状清清
-   楚楚随编码变化（``0x01``/``0x02`` 平坦，``0x05``/``0x03`` 约 −8 dB，``0x06``/``0x04``
-   约 −13 dB）。
-
-   **没有就地改这个数**：判据在取证前预注册，带着数据换判据正是要禁的事；而且那一轮
-   的结论不依赖它——:data:`MIN_DYNAMIC_RANGE_DB` 那道门槛独立成立（最好一档 13.8 dB，
-   要求 ≥40 dB）。要修得先升需求修订，并重新用红噪声模型标定。见 docs/protocol.md §6.2。
-"""
-
-PLATEAU_LEVEL_MAX_NOMINAL = 42.0
-"""平台水平判据只施加于标称值不高于此的档位，Hz。
-
-**宽档天然接近 1，不是污染。** 标定实测：真值 188 Hz 的干净数据平台水平高达 0.889，
-98 Hz 为 0.303–0.516——它们与 256 Hz 参考档在通带内本来就差不多，比值当然接近 1。
-对它们施加同一道门槛只会把合格数据判死。
-
-代价说清楚：**这道判据保护不了 98 / 188 / 256 三档**。那三档的拐点本就在 200 Hz
-采样的观测频段之外（奈奎斯特约 99 Hz），本方法对它们只能得出「测不到」，所以这个
-局限不额外损失什么——但不能假装它不存在。
+   退这道门槛属**判据修改**，走的是需求修订（RAY-315 R2），不是就地改数。判据先用
+   合成标定定出来，**再**拿 RAY-304 的两轮真机数据回归；顺序没有反过来。
 """
 
 NOMINAL_HZ = {
@@ -235,12 +268,155 @@ REPORT_FREQUENCIES = (5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90)
 """打印用的频点。判读由人做，所以曲线本身要看得见，不能只给一个结论。"""
 
 SELF_CHECK_BAND = (15.0, 32.0)
-"""判据 1。标定里真值 20 Hz 读作 17.0–25.3，真值 10 Hz 读作 11.0–13.8——区间取在两者
-中间，两边都留出余量。这一条只用来判断方法有没有效，所以宁可宽一点：真正需要精度的
-是判据 2，而它的区间由同一次标定独立给出。"""
+"""判据 1。区间是 RAY-304 取证前按白噪声标定预注册的（当时真值 20 Hz 读作 17.0–25.3，
+10 Hz 读作 11.0–13.8），取在两者中间、两边都留余量。这一条只用来判断方法有没有效，
+所以宁可宽一点：真正需要精度的是判据 2。
+
+**RAY-315 的红噪声重标定没有推翻它**：20 Hz 读作 16.8–21.5（仍全在区间内），10 Hz
+读作 10.3–13.5（仍全在区间外）。门槛值未改，也不需要改。"""
 
 VERDICT_BAND = (35.0, 80.0)
-"""判据 2。标定里真值 42 Hz 读作 41.8–66.4；相邻的 10 / 20 / 98 / 188 Hz 全在区间外。"""
+"""判据 2。RAY-304 取证前按白噪声标定预注册：真值 42 Hz 读作 41.8–66.4，相邻的
+10 / 20 / 98 / 188 Hz 全在区间外。
+
+.. warning::
+
+   **RAY-315 的红噪声重标定推翻了「相邻档位全在区间外」这半句。** 42 Hz 仍然落在
+   区间内（37.8–46.7），但 98 Hz 在红噪声下测得出拐点了（9 组里 3 组，读作
+   78.9–96.9 Hz），其中 78.9 Hz **落在区间内**——主判据分不开 42 与 98。
+
+   **本轮没有动这个区间。** 改判据区间是判据修改，要单独确认并升需求修订；RAY-315
+   确认的范围只到「退掉平台水平那道门槛」。
+
+   它不影响任何已有结论：:data:`MIN_DYNAMIC_RANGE_DB` 在干净合成数据上就不过
+   （14.5 dB，要求 ≥40 dB），本方法已经退役，主判据轮不到生效。要重新启用本方法，
+   这一条必须先解决。
+"""
+
+
+# ---------------------------------------------------------------------------
+# 门槛台账。RAY-315 立的通则：每一道预注册的门槛，标定都必须评估它。
+# ---------------------------------------------------------------------------
+
+
+POLLUTION_BIAS_TOLERANCE = 0.10
+"""掺污染前后 −3 dB 估计允许的相对变化。
+
+这个数是 :data:`MAX_PLATEAU_SPREAD` 那道门槛的**豁免条件**，不是一道门槛：污染用例
+若不触发它，:data:`GATE_LEDGER` 就要求拿出「这个失败模式无害」的实测证据，而证据就是
+同一组种子下拐点估计没有被带偏。带偏超过这个比例，豁免不成立，标定判失败。
+
+取 0.10 的依据：红噪声下实测的偏移远小于此——污染加到 10 倍，真值 42 Hz 仍读作
+38.8–44.4 Hz，与干净的 38.4–44.4 重合；白噪声下同样的污染把它读成 8.1–17.7 Hz，偏移
+60% 以上。两种情形差着一个数量级，门限落在中间哪儿都不改变结论。
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _Gate:
+    """一道预注册的前置门槛，外加「标定该拿什么用例去评估它」。
+
+    **通则（RAY-315 R2）**：每一道预注册的门槛，标定都必须评估它——报出干净数据上的
+    实测值（会不会误报），以及它声称要挡下的那个失败模式上的实测值（挡不挡得下）。
+    分不开时必须附上「该失败模式无害」的**实测**证据，否则标定判失败。合成评估不了
+    的门槛必须写明理由，**不得静默跳过**。
+
+    通则的来源是 RAY-304 审阅期的发现：``MIN_DYNAMIC_RANGE_DB`` 预注册了、合成标定也
+    建了，但标定从来没拿这道门槛跑过自己的数据。补跑之后才看清——连干净白噪声合成都
+    从未接近 40 dB，也就是说「本方法过不了自己预注册的门槛」在上真机之前就是可判定的。
+    标定手上有全部所需信息，只是没去查，代价是用户在真机上白跑了两轮。
+
+    加「必须证明能分开」这一条，是因为光「评估过」不够：``MAX_PLATEAU_LEVEL`` 正是
+    评估过也没用的例子——它在白噪声下分得开，换个噪声模型就分不开了，而它真正要挡的
+    那个失败模式同时也消失了。见 :data:`PLATEAU_LEVEL_CLEAN`。
+    """
+
+    constant: str
+    """门槛常量在本模块里的名字。``tests/test_probe_gate_ledger.py`` 靠它核对台账没有
+    漏掉任何一道门槛——漏掉正是 RAY-304 那次的失败方式。"""
+
+    limit: float
+    trips_when: str
+    """``"above"`` = 读数超过 ``limit`` 即触发；``"below"`` = 低于即触发。"""
+
+    reading: str
+    """从测量结果里读哪个字段。合成用例（``_CaseResult``）与真机结果（``_Outcome``）
+    用的是同一批字段名，所以同一份台账两边都能跑。"""
+
+    guards: str
+    """它声称要挡下的失败模式。"""
+
+    case: str | None
+    """标定里演示 ``guards`` 那个失败模式的用例键；``None`` = 本合成评估不了。"""
+
+    unevaluable: str = ""
+    """``case`` 为 ``None`` 时必须写明为什么评估不了。"""
+
+    harmless: str = ""
+    """用例演示不出分离时，指明「该失败模式无害」由哪一项实测来证。留空则标定判失败——
+    这是本通则的牙齿：没有证据就不许有例外。"""
+
+
+GATE_LEDGER: tuple[_Gate, ...] = (
+    _Gate(
+        constant="MAX_LINK_DEFECTS",
+        limit=float(MAX_LINK_DEFECTS),
+        trips_when="above",
+        reading="link_defects",
+        guards="丢样或重同步——时基上留洞，谱不可信",
+        case=None,
+        unevaluable=(
+            "合成数据没有 BLE 链路，丢样与重同步无从发生。这道门槛只能在真机上评估，"
+            "两轮真机取证里它都为 0。"
+        ),
+    ),
+    _Gate(
+        constant="MIN_SEGMENTS",
+        limit=float(MIN_SEGMENTS),
+        trips_when="below",
+        reading="segments",
+        guards="段数不足——谱估计方差过大，拐点无从谈起",
+        case="short",
+    ),
+    _Gate(
+        constant="MAX_PLATEAU_SPREAD",
+        limit=MAX_PLATEAU_SPREAD,
+        trips_when="above",
+        reading="spread",
+        guards="共同低频污染（环境振动）把通带平台压歪",
+        case="pollution",
+        harmless=(
+            "红噪声下污染用例不触发它，豁免依据是同一组种子下 −3 dB 估计没有被带偏"
+            f"（≤{POLLUTION_BIAS_TOLERANCE:.0%}）。白噪声下则确实被带偏，那时它挡得下。"
+        ),
+    ),
+    _Gate(
+        constant="MIN_DYNAMIC_RANGE_DB",
+        limit=MIN_DYNAMIC_RANGE_DB,
+        trips_when="below",
+        reading="dynamic_range_db",
+        guards="阻带压不下去——−3 dB 这个浅门限落在噪声里",
+        case="clean",
+    ),
+)
+"""本脚本全部的预注册前置门槛。**加门槛就要加这里的条目**，否则守卫测试挂。
+
+``MAX_PLATEAU_LEVEL`` 曾经在这张表上，RAY-315 把它退成了诊断量，见
+:data:`PLATEAU_LEVEL_CLEAN`。退出台账不等于删掉证据：它为什么退，记在那条常量的
+docstring 与 ``docs/protocol.md`` §6.2 里。
+"""
+
+
+def _gate_reading(gate: _Gate, source: object) -> float:
+    """从一份测量结果里读出某道门槛关心的那个量。"""
+    return float(getattr(source, gate.reading))
+
+
+def _gate_trips(gate: _Gate, value: float) -> bool:
+    """这个读数会不会触发该门槛。非有限值一律不触发——那是「测不出」，不是「不合格」。"""
+    if not math.isfinite(value):
+        return False
+    return value > gate.limit if gate.trips_when == "above" else value < gate.limit
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +535,8 @@ def _ratio_curve(
 
     **平台绝对水平此前被算出来就丢掉了**（下面的 ``scale``，只拿去做除法）。它是
     判断「归一化基准还成不成立」的唯一入口：接近 1 说明两路谱在通带内几乎相同，
-    R̂ 的形状已经不由滤波器决定。见 :data:`MAX_PLATEAU_LEVEL`。
+    R̂ 的形状已经不由滤波器决定。**但这个推理只在白噪声源下成立**，红噪声下平台
+    本来就接近 1；它因此已从门槛退为诊断量，见 :data:`PLATEAU_LEVEL_CLEAN`。
 
     阻带地板取归一化**之后**的 R̂ 在 :data:`FLOOR_BAND` 内的中位数，它与平台
     （归一化后恒为 1）的比值就是可用动态范围。见 :data:`MIN_DYNAMIC_RANGE_DB`。
@@ -468,6 +645,23 @@ _SELF_TEST_NOISE_RMS = 8.2
 _SELF_TEST_TRUTHS = (10.0, 20.0, 42.0, 98.0, 188.0)
 """维特通用编码表里 ``0x03`` 附近的档位。判据要能把 42 与它的邻居分开。"""
 
+_SELF_TEST_RED_ALPHA = 0.99
+"""源噪声的一阶红化系数（RAY-315 R2 定）。
+
+**真实传感器噪声不是白的。** 标定此前用白噪声，得出的干净基线在真机上系统性偏低
+（见 :data:`PLATEAU_LEVEL_CLEAN`）。α=0.99 与 α=0.999 都能复现真机实测的窄档平台
+水平 0.892–1.033；取 0.99 作准，0.999 作为对照记在文档里。
+
+**注入点必须在器件滤波器之前**（:func:`_synthesize` 里就是这么接的）。RAY-304 审阅
+期第一次把红化加在合成**之后**，三位小数完全没动——同一个线性滤波器同时作用于候选
+与参考，相除时精确抵消，那个测试是空的。验证任何关于 R̂ 的假设，扰动必须只作用于
+单路。这个坑容易重犯，所以记在这里。
+"""
+
+_SELF_TEST_WHITE_ALPHA = 0.0
+"""白噪声，即旧标定用的源。留着是为了在同一套代码里跑出对照，说明旧门槛为什么失效——
+不是为了给它留一条退路。"""
+
 
 def _lowpass(series: list[float], cutoff: float, fs: float, order: int) -> list[float]:
     """``order`` 级一阶 RC 级联，整体 −3 dB 点校正到 ``cutoff``。
@@ -487,14 +681,52 @@ def _lowpass(series: list[float], cutoff: float, fs: float, order: int) -> list[
     return out
 
 
-def _synthesize(cutoff: float, count: int, order: int, seed: int) -> list[float]:
-    """合成一路「白噪声 → 滤波 → 抽取 → 量化」的加速度原始计数。"""
+def _red_source(count: int, alpha: float, rng: random.Random) -> list[float]:
+    """一阶 AR(1) 红噪声，事后归一化到 :data:`_SELF_TEST_NOISE_RMS`。
+
+    ``x[n] = alpha * x[n-1] + w[n]``。α=0 退化成白噪声。
+
+    **归一化不能省。** AR(1) 的方差按 ``1/(1-alpha**2)`` 涨，α=0.999 时是白噪声的
+    五百倍。不归一化，红噪声那几组的量化噪声相对量级会小到可以忽略，测出来的差异就
+    分不清是噪声颜色还是量化——而量化底正是这个实验动态范围的来源。
+
+    预热按时间常数取（``1/(1-alpha)`` 个样本的 20 倍），不写死：α=0.999 的时间常数是
+    α=0.99 的十倍，同一个预热长度对前者不够、对后者是白等。
+    """
+    if alpha <= 0.0:
+        return [rng.gauss(0.0, _SELF_TEST_NOISE_RMS) for _ in range(count)]
+
+    burn = min(20_000, max(1_000, int(20.0 / (1.0 - alpha))))
+    series: list[float] = []
+    previous = 0.0
+    for _ in range(burn + count):
+        previous = alpha * previous + rng.gauss(0.0, 1.0)
+        series.append(previous)
+    series = series[burn:]
+    rms = math.sqrt(sum(v * v for v in series) / len(series))
+    if rms <= 0:
+        return series
+    gain = _SELF_TEST_NOISE_RMS / rms
+    return [v * gain for v in series]
+
+
+def _synthesize(
+    cutoff: float,
+    count: int,
+    order: int,
+    seed: int,
+    alpha: float = _SELF_TEST_RED_ALPHA,
+) -> list[float]:
+    """合成一路「源噪声 →（红化）→ 滤波 → 抽取 → 量化」的加速度原始计数。
+
+    红化在**滤波之前**，见 :data:`_SELF_TEST_RED_ALPHA`。
+    """
     rng = random.Random(seed)
     warmup = 4000
     inner_fs = _SELF_TEST_FS * _SELF_TEST_OVERSAMPLE
     total = count * _SELF_TEST_OVERSAMPLE + warmup
-    white = [rng.gauss(0, _SELF_TEST_NOISE_RMS) for _ in range(total)]
-    filtered = _lowpass(white, cutoff, inner_fs, order)
+    source = _red_source(total, alpha, rng)
+    filtered = _lowpass(source, cutoff, inner_fs, order)
     decimated = filtered[warmup :: _SELF_TEST_OVERSAMPLE][:count]
     return [float(round(value)) for value in decimated]
 
@@ -521,31 +753,160 @@ R̂ 的平台被整体抬高，而离散度看起来照样很小。RAY-298 真�
 
 
 def _synthesize_polluted(
-    cutoff: float, count: int, order: int, seed: int
+    cutoff: float,
+    count: int,
+    order: int,
+    seed: int,
+    alpha: float = _SELF_TEST_RED_ALPHA,
+    rms: float = _POLLUTION_RMS,
 ) -> list[float]:
     """与 :func:`_synthesize` 相同，但在**抽取之后**叠加一路共同的低频污染。"""
-    clean = _synthesize(cutoff, count, order, seed)
+    clean = _synthesize(cutoff, count, order, seed, alpha)
     phase = (seed % 97) / 97.0 * 2 * math.pi
     step = 2 * math.pi * _POLLUTION_HZ / _SELF_TEST_FS
     return [
-        value + _POLLUTION_RMS * math.sqrt(2) * math.sin(phase + step * i)
+        value + rms * math.sqrt(2) * math.sin(phase + step * i)
         for i, value in enumerate(clean)
     ]
 
 
-def _pollution_case(count: int) -> tuple[float, float]:
-    """跑一次「掺共同低频污染」的用例，返回 ``(平台绝对水平, 平台离散度)``。
+_POLLUTION_STRESS = 10.0
+"""污染幅度的加码倍数。
 
-    这个用例存在的唯一目的是**证明新判据能挡下旧判据挡不下的东西**。它不检验拐点
-    还原得准不准——污染之下那个数本来就没有意义。
+标定幅度（:data:`_POLLUTION_RMS`）是按白噪声模型挑的「旧门槛挡不下、新门槛挡得下」
+那一档。红噪声下这个统计量分不开，必须排除「只是幅度不够」这一种解释，所以再按 10 倍
+跑一遍。10 倍仍然分不开，才说得上是统计量本身没有分辨力。
+"""
+
+_SHORT_CASE_SECONDS = 8.0
+"""``MIN_SEGMENTS`` 的演示用例：短于判读所需的一段采集。
+
+这道门槛此前从未被标定评估过——和 ``MIN_DYNAMIC_RANGE_DB`` 一样，预注册了就没再管。
+台账通则把它捞了出来。
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _CaseResult:
+    """一个合成用例上，:data:`GATE_LEDGER` 各门槛关心的那几个量。
+
+    字段名与 :class:`_Outcome`（真机结果）刻意保持一致，好让同一份台账两边都能跑——
+    真机回归核对靠的就是这一点。
+    """
+
+    plateau_level: float
+    spread: float
+    dynamic_range_db: float
+    segments: int
+    cutoff: float | None
+    link_defects: int = 0
+    """合成数据没有链路，恒为 0。留这个字段是为了字段名对齐，不是为了假装评估过它。"""
+
+
+def _run_case(
+    count: int,
+    order: int,
+    truth: float,
+    base: int,
+    *,
+    alpha: float = _SELF_TEST_RED_ALPHA,
+    pollution_rms: float = 0.0,
+) -> _CaseResult:
+    """跑一个合成用例：三轴参考档 + 三轴候选档，走同一套分析流程。
+
+    ``base`` 决定种子，所以「同一组种子、只加污染」这种对照是可做的——拐点有没有被
+    带偏，只有在种子对齐时问才有意义。
+    """
+
+    def axes(cutoff: float, offset: int) -> list[list[float]]:
+        if pollution_rms > 0:
+            return [
+                _synthesize_polluted(
+                    cutoff, count, order, base + offset + i, alpha, pollution_rms
+                )
+                for i in range(3)
+            ]
+        return [
+            _synthesize(cutoff, count, order, base + offset + i, alpha)
+            for i in range(3)
+        ]
+
+    freqs, ref_power, segments = _average_axes(axes(256.0, 0), _SELF_TEST_FS)
+    _, power, _ = _average_axes(axes(truth, 100), _SELF_TEST_FS)
+    ratio, spread, level, floor = _ratio_curve(freqs, power, ref_power)
+    return _CaseResult(
+        plateau_level=level,
+        spread=spread,
+        dynamic_range_db=_dynamic_range_db(floor),
+        segments=segments,
+        cutoff=_cutoff(freqs, ratio),
+    )
+
+
+def _pollution_case(
+    count: int, rms: float = _POLLUTION_RMS
+) -> tuple[_CaseResult, _CaseResult]:
+    """同一组种子跑两遍：不掺污染、掺污染。返回 ``(干净, 污染)``。
+
+    **种子必须对齐。** 「污染有没有把拐点带偏」这个问题，只有在其它一切都相同的情况下
+    问才有意义；拿两组不同的随机实现去比，比的是随机涨落。
     """
     order = 2
-    reference = [_synthesize_polluted(256.0, count, order, 70_000 + i) for i in range(3)]
-    freqs, ref_power, _ = _average_axes(reference, _SELF_TEST_FS)
-    axes = [_synthesize_polluted(42.0, count, order, 70_100 + i) for i in range(3)]
-    _, power, _ = _average_axes(axes, _SELF_TEST_FS)
-    _, spread, plateau, _ = _ratio_curve(freqs, power, ref_power)
-    return plateau, spread
+    base = 70_000
+    return (
+        _run_case(count, order, 42.0, base),
+        _run_case(count, order, 42.0, base, pollution_rms=rms),
+    )
+
+
+def _short_case() -> _CaseResult:
+    """一段短于判读所需的采集，用来演示 :data:`MIN_SEGMENTS` 挡得下什么。"""
+    return _run_case(int(_SELF_TEST_FS * _SHORT_CASE_SECONDS), 2, 42.0, 80_000)
+
+
+def _cutoff_bias(clean: _CaseResult, polluted: _CaseResult) -> float:
+    """污染把 −3 dB 估计带偏了多少（相对值）。测不出拐点算作 ``inf``——那是被带偏
+    到没有了，不是「没有影响」。"""
+    if clean.cutoff is None or polluted.cutoff is None or clean.cutoff <= 0:
+        return math.inf
+    return abs(polluted.cutoff - clean.cutoff) / clean.cutoff
+
+
+def _colour_contrast(count: int) -> None:
+    """打印「源噪声颜色 × 污染幅度」的对照表。
+
+    这张表是 RAY-315 退掉平台水平门槛的直接依据，所以它由脚本自己跑出来，不靠转述。
+    为了控制耗时只跑 2 阶、三个窄档真值——门槛当初也只施加于窄档。
+    """
+    print(f"\n{'─' * 66}")
+    print("源噪声颜色对照（RAY-315）：平台绝对水平还分不分得开干净与污染")
+    print(f"{'─' * 66}")
+    print(f"{'源噪声':<14}{'干净':>18}{'掺污染 ×1':>18}{'掺污染 ×' + f'{_POLLUTION_STRESS:.0f}':>18}")
+
+    for label, alpha in (
+        ("白 α=0", _SELF_TEST_WHITE_ALPHA),
+        (f"红 α={_SELF_TEST_RED_ALPHA}", _SELF_TEST_RED_ALPHA),
+        ("红 α=0.999", 0.999),
+    ):
+        cells = []
+        for rms in (0.0, _POLLUTION_RMS, _POLLUTION_RMS * _POLLUTION_STRESS):
+            levels = [
+                _run_case(
+                    count, 2, truth, 90_000 + 500 * index, alpha=alpha, pollution_rms=rms
+                ).plateau_level
+                for index, truth in enumerate((10.0, 20.0, 42.0))
+            ]
+            usable = [v for v in levels if math.isfinite(v)]
+            cells.append(
+                f"{min(usable):.3f}–{max(usable):.3f}" if usable else "无有效平台"
+            )
+        print(f"{label:<14}" + "".join(f"{cell:>18}" for cell in cells))
+
+    print(
+        "\n共同污染把比值推向 1。白噪声下平台原本在 0.2–0.3，那是 2–3 倍的抬升，分得开；\n"
+        "红噪声下平台本来就在 1 附近，**没有可抬升的余量**——幅度加到 10 倍也一样。\n"
+        "所以不是门槛取值没找对，是这个统计量在真实噪声模型下没有分辨力。"
+    )
 
 
 def _self_test(seconds: float) -> int:
@@ -562,7 +923,8 @@ def _self_test(seconds: float) -> int:
 
     observed: dict[float, list[float]] = {truth: [] for truth in _SELF_TEST_TRUTHS}
     worst_spread = 0.0
-    worst_level = 0.0
+    # 窄档的平台绝对水平。只统计、不判定——它已从门槛退为诊断量。
+    narrow_levels: list[float] = []
     best_floor = math.inf     # 地板越小动态范围越大，故取最小者代表最好情况
 
     for order in (1, 2, 3):
@@ -584,10 +946,10 @@ def _self_test(seconds: float) -> int:
                     best_floor = min(best_floor, floor)
                 row_spread = max(row_spread, spread)
                 worst_spread = max(worst_spread, spread)
-                # 只有窄档参与门槛标定：宽档（98/188 Hz）与 256 Hz 参考档在通带
-                # 内本来就差不多，水平天然接近 1，见 PLATEAU_LEVEL_MAX_NOMINAL。
-                if math.isfinite(level) and truth <= PLATEAU_LEVEL_MAX_NOMINAL:
-                    worst_level = max(worst_level, level)
+                # 只统计窄档：宽档（98/188 Hz）与 256 Hz 参考档在通带内本来就
+                # 差不多，水平天然接近 1，混进来会让这个区间失去意义。
+                if math.isfinite(level) and truth <= 42.0:
+                    narrow_levels.append(level)
                 estimate = _cutoff(freqs, ratio)
                 if estimate is not None:
                     observed[truth].append(estimate)
@@ -614,38 +976,122 @@ def _self_test(seconds: float) -> int:
     if not forty_two or not all(low <= v <= high for v in forty_two):
         print(f"\n❌ 真值 42 Hz 没有全部落在主判据区间 {low:.0f}–{high:.0f} Hz 内。")
         ok = False
-    for truth in (10.0, 98.0, 188.0):
-        if any(low <= v <= high for v in observed[truth]):
-            print(f"\n❌ 真值 {truth:.0f} Hz 落进了主判据区间——判据无法把它与 42 Hz 分开。")
-            ok = False
-    if worst_spread > MAX_PLATEAU_SPREAD:
-        print(f"\n❌ 干净数据的平台离散 {worst_spread:.2f} 已超过门槛 "
-              f"{MAX_PLATEAU_SPREAD}，门槛定得太紧。")
+    leaked = [
+        truth
+        for truth in (10.0, 98.0, 188.0)
+        if any(low <= v <= high for v in observed[truth])
+    ]
+    for truth in leaked:
+        inside = [v for v in observed[truth] if low <= v <= high]
+        print(
+            f"\n❌ 真值 {truth:.0f} Hz 落进了主判据区间 {low:.0f}–{high:.0f} Hz"
+            f"（{len(inside)}/{len(observed[truth]) or 0} 组，最低 {min(inside):.1f} Hz）"
+            "——判据无法把它与 42 Hz 分开。"
+        )
         ok = False
-    if worst_level > MAX_PLATEAU_LEVEL:
-        print(f"\n❌ 干净窄档的平台绝对水平 {worst_level:.3f} 已超过门槛 "
-              f"{MAX_PLATEAU_LEVEL}，门槛定得太紧。")
-        ok = False
-    else:
-        print(f"\n干净数据：窄档（≤{PLATEAU_LEVEL_MAX_NOMINAL:.0f} Hz）平台绝对水平最高 "
-              f"{worst_level:.3f}（门槛 ≤{MAX_PLATEAU_LEVEL}），离散最高 "
-              f"{worst_spread:.2f}。")
-
-    # ---- 动态范围：这道门槛此前从未被标定评估过 ----
-    #
-    # 预注册了「可用动态范围 ≥ MIN_DYNAMIC_RANGE_DB」，也建了这套标定，但标定只查
-    # 平台水平、平台离散和区间还原，**从来没拿这道门槛跑过自己的合成数据**。补上
-    # 之后才看清：干净合成数据也从未接近过门槛。也就是说「本方法过不了自己那道门槛」
-    # 在上真机之前就是可判定的，标定手上有全部所需信息，只是没去查——代价是真机上
-    # 白跑了两轮。RAY-304 已据此定论，见 docs/protocol.md §6.2。
-    best_db = _dynamic_range_db(best_floor)
+    if 98.0 in leaked:
+        print(
+            "   这一条是 RAY-315 换用红噪声源之后才暴露的：白噪声下 98 Hz 永远测不出\n"
+            "   拐点（能量全在低频，奈奎斯特附近没东西可看），红噪声下它测得出。\n"
+            "   **本轮没有动 VERDICT_BAND**——改判据区间是判据修改，要单独确认并升\n"
+            "   需求修订。它不改变任何已有结论，因为动态范围那道门槛在干净合成数据上\n"
+            "   就已经不过，本方法已经退役，主判据轮不到生效。"
+        )
     print(
-        f"\n干净合成数据能达到的**最好**动态范围：{best_db:.1f} dB"
-        f"（门槛 ≥{MIN_DYNAMIC_RANGE_DB:.0f} dB）"
+        f"\n干净窄档的平台绝对水平：{min(narrow_levels):.3f}–{max(narrow_levels):.3f}"
+        f"（诊断量，不是门槛；常量 PLATEAU_LEVEL_CLEAN 记的就是这个区间）"
     )
+    if PLATEAU_LEVEL_CLEAN != (0.0, 0.0):
+        low, high = PLATEAU_LEVEL_CLEAN
+        if not (low <= min(narrow_levels) and max(narrow_levels) <= high):
+            print(
+                f"⚠️ 与 PLATEAU_LEVEL_CLEAN 记的 {low:.2f}–{high:.2f} 对不上。"
+                "常量该跟着标定走，去更新它。"
+            )
+
+    _colour_contrast(count)
+
+    # ---- 门槛台账。RAY-315 立的通则：一道都不许跳过 ----
+    print(f"\n{'─' * 66}")
+    print("门槛台账：每一道预注册的门槛，标定都必须评估它（RAY-315）")
+    print(f"{'─' * 66}")
+
+    best_db = _dynamic_range_db(best_floor)
+    clean_case = _CaseResult(
+        plateau_level=max(narrow_levels),
+        spread=worst_spread,
+        dynamic_range_db=best_db,
+        segments=segments,
+        cutoff=None,
+    )
+    pollution_clean, pollution_dirty = _pollution_case(count)
+    bias = _cutoff_bias(pollution_clean, pollution_dirty)
+    cases = {
+        "clean": clean_case,
+        "pollution": pollution_dirty,
+        "short": _short_case(),
+    }
+    # 分不开时可用的豁免依据：必须是**实测**出来的，不能只是台账里那句话。
+    harmless_checks = {
+        "MAX_PLATEAU_SPREAD": (
+            bias <= POLLUTION_BIAS_TOLERANCE,
+            (
+                f"同一组种子，掺污染前后 −3 dB 估计 "
+                f"{_format_cutoff(pollution_clean.cutoff)} → "
+                f"{_format_cutoff(pollution_dirty.cutoff)}，"
+                f"相对变化 {bias:.1%}（容差 ≤{POLLUTION_BIAS_TOLERANCE:.0%}）"
+            ),
+        ),
+    }
+
+    for gate in GATE_LEDGER:
+        sign = "≤" if gate.trips_when == "above" else "≥"
+        print(f"\n· {gate.constant} {sign}{gate.limit:g} —— 挡的是：{gate.guards}")
+
+        clean_value = _gate_reading(gate, clean_case) if gate.reading else math.nan
+        if gate.case is None:
+            if not gate.unevaluable:
+                print("  ❌ 台账没写为什么评估不了。静默跳过正是本通则要禁的事。")
+                ok = False
+            else:
+                print(f"  ⊘ 本合成评估不了：{gate.unevaluable}")
+            continue
+
+        if gate.case == "clean":
+            print(f"  干净数据：{clean_value:g}")
+            if _gate_trips(gate, clean_value):
+                print("  ⚠️ **干净合成数据本身就触发了这道门槛——本方法达不到自己的要求。**")
+            else:
+                print("  ✅ 干净数据不误报。")
+            continue
+
+        case_value = _gate_reading(gate, cases[gate.case])
+        print(f"  干净数据：{clean_value:g}    {gate.case} 用例：{case_value:g}")
+        if _gate_trips(gate, clean_value):
+            print("  ❌ 干净数据就触发了它——会误报，门槛定得太紧。")
+            ok = False
+            continue
+        if _gate_trips(gate, case_value):
+            print("  ✅ 分得开：干净不触发，失败模式触发。")
+            continue
+
+        print("  ⚠️ 分不开：失败模式也没触发它。按通则要拿出「该失败模式无害」的实测证据。")
+        checked = harmless_checks.get(gate.constant)
+        if not gate.harmless or checked is None:
+            print("  ❌ 没有登记豁免依据。**分不开又证明不了无害的门槛不许留着。**")
+            ok = False
+            continue
+        passed, detail = checked
+        print(f"  依据：{detail}")
+        if passed:
+            print("  ✅ 无害成立，豁免通过。")
+        else:
+            print("  ❌ 无害不成立——它挡不下，而那个失败模式确实有害。")
+            ok = False
+
     if best_db < MIN_DYNAMIC_RANGE_DB:
         print(
-            "⚠️ **本方法在干净合成数据上就达不到自己预注册的动态范围门槛。**\n"
+            "\n⚠️ **本方法在干净合成数据上就达不到自己预注册的动态范围门槛。**\n"
             "   这不是标定坏了，是方法不适用：噪声底在器件滤波器之后又被一层共同的\n"
             "   地板（ADC 量化 / 数字化 / 链路）压住，比值压不下去，−3 dB 拐点无从谈起。\n"
             "   真机已于 2026-08-28 跨两台设备实测确认（6.0–13.8 dB），RAY-304 据此\n"
@@ -653,38 +1099,19 @@ def _self_test(seconds: float) -> int:
             "   得改用主动激励（已知频率、幅度远高于地板的振动输入，扫频测传递函数）。"
         )
 
-    # ---- 污染用例：证明新判据挡得下旧判据挡不下的东西 ----
-    polluted_level, polluted_spread = _pollution_case(count)
-    print(
-        f"\n掺共同低频污染（{_POLLUTION_HZ} Hz，落在平台区间内，滤波之后叠加）："
-        f"平台绝对水平 {polluted_level:.3f}，离散 {polluted_spread:.2f}"
-    )
-    if polluted_level <= MAX_PLATEAU_LEVEL:
+    if ok:
         print(
-            f"❌ 污染用例的平台绝对水平 {polluted_level:.3f} 没有超过门槛 "
-            f"{MAX_PLATEAU_LEVEL}——**新判据挡不下它**，门槛太松或污染模型不对。"
+            "\n✅ 标定自洽：判据区间容得下已知真值、把相邻档位排除在外，"
+            "且每一道门槛都被评估过。"
         )
-        ok = False
-    else:
-        print(f"✅ 新判据挡下了它（{polluted_level:.3f} > {MAX_PLATEAU_LEVEL}）。")
-    if polluted_spread > MAX_PLATEAU_SPREAD:
+    elif best_db < MIN_DYNAMIC_RANGE_DB:
         print(
-            f"⚠️ 污染用例的离散 {polluted_spread:.2f} 也超了门槛——本用例没能复现\n"
-            "   「离散度挡不下」那个失败模式（真机是 1.59 / 1.20，都在门槛内）。\n"
-            "   新判据仍然有效，但这条用例证明不了它**不可替代**。"
+            "\n❌ 标定不自洽（见上面标 ❌ 的行）。\n"
+            "   注意这**不是**「把判据修好就能去跑真机」：动态范围那道门槛在干净合成\n"
+            "   数据上就已经不过，本方法已经退役。修判据的意义只在于把结论记准确。"
         )
     else:
-        print(
-            f"✅ 而离散度 {polluted_spread:.2f} 仍在门槛 {MAX_PLATEAU_SPREAD} 内——\n"
-            "   **这正是必须新增绝对水平判据的理由**：RAY-298 真机实测 1.59 / 1.20\n"
-            "   通过了离散度门槛，数据却已经不可判读。"
-        )
-
-    print(
-        "\n✅ 标定自洽：判据区间容得下已知真值，且把相邻档位排除在外。"
-        if ok
-        else "\n❌ 标定不自洽。**先修判据，再去占用真机时间。**"
-    )
+        print("\n❌ 标定不自洽。**先修判据，再去占用真机时间。**")
     return 0 if ok else 1
 
 
@@ -695,8 +1122,11 @@ def _self_test(seconds: float) -> int:
 
 async def _collect(
     device: WT901Device, seconds: float
-) -> tuple[list[list[float]], list[list[float]], float, bool]:
-    """采一段，返回 ``(加速度三轴, 角速度三轴, 实测采样率, 链路是否干净)``。
+) -> tuple[list[list[float]], list[list[float]], float, int]:
+    """采一段，返回 ``(加速度三轴, 角速度三轴, 实测采样率, 链路缺陷数)``。
+
+    缺陷数 = 丢样 + 重同步。返回计数而不是布尔，是为了让 :data:`GATE_LEDGER` 能像
+    读别的门槛一样读它，而不是在判读里另写一条 if。
 
     先排空积压：写完寄存器到开始采之间队列里已经堆了若干样本，它们的 ``t_host``
     不反映真实到达节奏，会把实测速率算高——而实测速率就是频率轴的刻度。
@@ -724,24 +1154,23 @@ async def _collect(
 
     elapsed = time.monotonic() - start
     after = device.stats
-    clean = (
-        after.dropped_samples == before.dropped_samples
-        and after.resync_count == before.resync_count
+    defects = (after.dropped_samples - before.dropped_samples) + (
+        after.resync_count - before.resync_count
     )
-    return accel, gyro, len(accel[0]) / elapsed, clean
+    return accel, gyro, len(accel[0]) / elapsed, defects
 
 
 async def _measure(
     device: WT901Device, code: int, seconds: float
-) -> tuple[list[float], list[float], list[float], int, float, bool]:
-    """设一档带宽并采一段，返回 ``(频率, 加速度谱, 角速度谱, 段数, 采样率, 链路干净)``。"""
+) -> tuple[list[float], list[float], list[float], int, float, int]:
+    """设一档带宽并采一段，返回 ``(频率, 加速度谱, 角速度谱, 段数, 采样率, 链路缺陷数)``。"""
     await device.registers.write(Register.BANDWIDTH, code, persist=False)
     await asyncio.sleep(SETTLE)
-    accel, gyro, fs, clean = await _collect(device, seconds)
+    accel, gyro, fs, defects = await _collect(device, seconds)
 
     freqs, accel_power, segments = _average_axes(accel, fs)
     _, gyro_power, _ = _average_axes(gyro, fs)
-    return freqs, accel_power, gyro_power, segments, fs, clean
+    return freqs, accel_power, gyro_power, segments, fs, defects
 
 
 def _print_curve(label: str, freqs: list[float], ratio: list[float]) -> None:
@@ -765,6 +1194,9 @@ class _Outcome:
     segments: int
     fs: float
     clean: bool
+    link_defects: int
+    """采集期间的丢样 + 重同步总数。台账（:data:`GATE_LEDGER`）读的是这个数而不是
+    ``clean``，好让同一份台账在合成用例与真机结果上跑的是同一段代码。"""
     spread: float
     plateau_level: float
     """通带平台的绝对水平（归一化前）。接近 1 即归一化基准失效。"""
@@ -802,7 +1234,7 @@ async def _run_probe(seconds: float) -> int:
     print("手一碰、桌子一晃，低频成分就会把通带平台污染掉（脚本会检出并要求重采）。\n")
 
     outcomes: list[_Outcome] = []
-    reference_clean = False
+    reference_defects = 0
     reference_segments = 0
 
     async with await WT901Device.connect(sensor) as device:
@@ -819,10 +1251,10 @@ async def _run_probe(seconds: float) -> int:
 
             print(f"\n── 参考档 0x{int(REFERENCE_CODE):02X}（HZ_256）")
             ref = await _measure(device, REFERENCE_CODE, seconds)
-            _, ref_accel, ref_gyro, reference_segments, ref_fs, reference_clean = ref
+            _, ref_accel, ref_gyro, reference_segments, ref_fs, reference_defects = ref
             print(
                 f"   实测采样率 {ref_fs:.2f} Hz，{reference_segments} 段，"
-                f"链路 {'干净 ✅' if reference_clean else '有丢样/重同步 ❌'}"
+                f"链路 {'干净 ✅' if reference_defects <= MAX_LINK_DEFECTS else '有丢样/重同步 ❌'}"
             )
 
             for code in SWEEP_CODES:
@@ -830,12 +1262,12 @@ async def _run_probe(seconds: float) -> int:
                 print(
                     f"\n── 0x{int(code):02X}（标称 {NOMINAL_HZ[code]:.0f} Hz，{role}）"
                 )
-                freqs, accel, gyro, segments, fs, clean = await _measure(
+                freqs, accel, gyro, segments, fs, defects = await _measure(
                     device, code, seconds
                 )
                 print(
                     f"   实测采样率 {fs:.2f} Hz，{segments} 段，"
-                    f"链路 {'干净 ✅' if clean else '有丢样/重同步 ❌'}"
+                    f"链路 {'干净 ✅' if defects <= MAX_LINK_DEFECTS else '有丢样/重同步 ❌'}"
                 )
 
                 accel_ratio, spread, plateau, floor = _ratio_curve(
@@ -854,11 +1286,8 @@ async def _run_probe(seconds: float) -> int:
                 )
                 print(
                     f"   通带平台绝对水平 = {plateau:.3f}"
-                    + (
-                        f"（门槛 ≤{MAX_PLATEAU_LEVEL}，干净数据 0.200–0.343）"
-                        if NOMINAL_HZ[code] <= PLATEAU_LEVEL_MAX_NOMINAL
-                        else "（宽档，不设门槛，天然接近 1）"
-                    )
+                    f"（诊断量，不是门槛；干净合成标定 "
+                    f"{PLATEAU_LEVEL_CLEAN[0]:.2f}–{PLATEAU_LEVEL_CLEAN[1]:.2f}）"
                 )
                 print(
                     f"   阻带地板 = {floor:.5f}  →  可用动态范围 "
@@ -877,7 +1306,8 @@ async def _run_probe(seconds: float) -> int:
                         gyro_cutoff=gyro_cut,
                         segments=segments,
                         fs=fs,
-                        clean=clean,
+                        clean=defects <= MAX_LINK_DEFECTS,
+                        link_defects=defects,
                         spread=spread,
                         plateau_level=plateau,
                         floor=floor,
@@ -894,11 +1324,11 @@ async def _run_probe(seconds: float) -> int:
                 f"(0x{original_bandwidth:02X} / 0x{original_rate:02X})，未保存。"
             )
 
-    _report(outcomes, reference_segments, reference_clean)
+    _report(outcomes, reference_segments, reference_defects)
     return 0
 
 
-def _report(outcomes: list[_Outcome], ref_segments: int, ref_clean: bool) -> None:
+def _report(outcomes: list[_Outcome], ref_segments: int, ref_defects: int) -> None:
     print(f"\n{'=' * 70}")
     print("按 RAY-304 scope 2 开工前预注册的判据判读")
     print(f"{'=' * 70}")
@@ -907,56 +1337,42 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_clean: bool) -> Non
         print("\n❌ 采集未完成，无法判读。")
         return
 
-    # ---- 采集质量（与判据无关，先排除「数据本身不能用」） ----
-    if not (ref_clean and all(o.clean for o in outcomes)):
+    # ---- 诊断量：通带平台绝对水平。**不是门槛**，见 PLATEAU_LEVEL_CLEAN ----
+    levels = [o.plateau_level for o in outcomes if math.isfinite(o.plateau_level)]
+    if levels:
         print(
-            "\n❌ 采集质量不过：某一档期间有丢样或重同步。时基有洞，谱不可信。\n"
-            "   **不要据此判读**。离主机近一点、关掉其他 BLE 设备后重采。"
+            f"\n通带平台绝对水平 {min(levels):.3f}–{max(levels):.3f}"
+            f"（诊断量；干净合成标定 "
+            f"{PLATEAU_LEVEL_CLEAN[0]:.2f}–{PLATEAU_LEVEL_CLEAN[1]:.2f}）"
         )
-        return
-    if ref_segments < MIN_SEGMENTS or any(o.segments < MIN_SEGMENTS for o in outcomes):
-        print(f"\n❌ 段数不足（要求每档 ≥ {MIN_SEGMENTS}）。加大采集秒数后重跑。")
-        return
 
-    # ---- 前置门槛一：归一化基准是否还成立 ----
-    worst_spread = max(o.spread for o in outcomes)
-    # 只看窄档：宽档与参考档在通带内本来就差不多，水平天然接近 1（标定实测干净
-    # 数据下 188 Hz 可到 0.889），拿同一道门槛去卡只会把合格数据判死。
-    narrow = [
-        o for o in outcomes
-        if math.isfinite(o.plateau_level) and o.nominal <= PLATEAU_LEVEL_MAX_NOMINAL
-    ]
-    worst_level = max((o.plateau_level for o in narrow), default=math.nan)
-    if math.isfinite(worst_level) and worst_level > MAX_PLATEAU_LEVEL:
-        offenders = ", ".join(
-            f"0x{o.code:02X}({o.nominal:.0f} Hz)"
-            for o in narrow if o.plateau_level > MAX_PLATEAU_LEVEL
-        )
+    # ---- 前置门槛：逐条按 GATE_LEDGER 走，一道都不跳过 ----
+    reference = _CaseResult(
+        plateau_level=math.nan,
+        spread=math.nan,
+        dynamic_range_db=math.inf,
+        segments=ref_segments,
+        cutoff=None,
+        link_defects=ref_defects,
+    )
+    for gate in GATE_LEDGER:
+        readings = [_gate_reading(gate, o) for o in outcomes]
+        readings.append(_gate_reading(gate, reference))
+        tripped = [value for value in readings if _gate_trips(gate, value)]
+        if not tripped:
+            continue
+        worst = max(tripped) if gate.trips_when == "above" else min(tripped)
+        if gate.constant == "MIN_DYNAMIC_RANGE_DB":
+            break  # 这一道有专门的交付说明，见下
         print(
-            f"\n❌ 前置门槛一不过：窄档 {offenders} 的通带平台绝对水平最高 "
-            f"{worst_level:.3f}，\n"
-            f"   超过 {MAX_PLATEAU_LEVEL}（标定实测干净窄档 0.200–0.343）。\n"
-            "   两路谱在通带内几乎相同，说明一个**共同的低频成分**同时主导了候选档与\n"
-            "   参考档，相除时抵消掉了——归一化的基准已经失效，R̂ 的形状不再由滤波器\n"
-            "   决定，后面算出来的拐点没有意义。\n"
-            f"   （平台离散 {worst_spread:.2f} 此时可能仍然「合格」：RAY-298 真机实测\n"
-            "     1.59 / 1.20 就通过了 ≤2.5 这道门槛。**离散度挡不下这种污染。**）\n"
-            "   把设备挪到不振动的地方（地面、厚垫子，远离风扇和走动）后重采。"
-        )
-        return
-    if not narrow:
-        print(
-            f"\n⚠️ 没有任何标称值 ≤{PLATEAU_LEVEL_MAX_NOMINAL:.0f} Hz 的档位测出有效平台，\n"
-            "   前置门槛一**这次没有生效**——下面的判读少了一道保护。"
-        )
-    if worst_spread > MAX_PLATEAU_SPREAD:
-        print(
-            f"\n❌ 通带平台离散 {worst_spread:.2f} 超过门槛 {MAX_PLATEAU_SPREAD}：\n"
-            "   通带里混进了各档都原样放行的低频成分。**这种数据不能判读**，重采。"
+            f"\n❌ 前置门槛 {gate.constant} 不过：实测最差 {worst:g}，"
+            f"门槛 {'≤' if gate.trips_when == 'above' else '≥'}{gate.limit:g}。\n"
+            f"   它挡的是：{gate.guards}。\n"
+            "   **这种数据不能判读**，重采。"
         )
         return
 
-    # ---- 前置门槛二：动态范围够不够开始 ----
+    # ---- 动态范围不过：这是预注册判据列明的完整交付之一，不是「重采」 ----
     worst_range = min(o.dynamic_range_db for o in outcomes)
     if worst_range < MIN_DYNAMIC_RANGE_DB:
         print(
@@ -975,7 +1391,8 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_clean: bool) -> Non
         )
         return
     print(
-        f"\n✅ 前置门槛通过：平台绝对水平 ≤{worst_level:.3f}、离散 ≤{worst_spread:.2f}、"
+        f"\n✅ 前置门槛全部通过（{len(GATE_LEDGER)} 道）："
+        f"离散 ≤{max(o.spread for o in outcomes):.2f}、"
         f"可用动态范围 ≥{worst_range:.1f} dB。"
     )
 
