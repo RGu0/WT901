@@ -1331,6 +1331,7 @@ async def _run_probe(seconds: float) -> int:
 def _report(outcomes: list[_Outcome], ref_segments: int, ref_defects: int) -> None:
     print(f"\n{'=' * 70}")
     print("按 RAY-304 scope 2 开工前预注册的判据判读")
+    print("（其中「通带平台绝对水平 ≤0.40」已由 RAY-315 退为诊断量）")
     print(f"{'=' * 70}")
 
     if not outcomes:
@@ -1376,8 +1377,8 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_defects: int) -> No
     worst_range = min(o.dynamic_range_db for o in outcomes)
     if worst_range < MIN_DYNAMIC_RANGE_DB:
         print(
-            f"\n⚠️ 前置门槛二不过：可用动态范围最低仅 {worst_range:.1f} dB，"
-            f"低于 {MIN_DYNAMIC_RANGE_DB:.0f} dB。\n"
+            f"\n⚠️ 前置门槛 MIN_DYNAMIC_RANGE_DB 不过：可用动态范围最低仅 "
+            f"{worst_range:.1f} dB，低于 {MIN_DYNAMIC_RANGE_DB:.0f} dB。\n"
             "   阻带没有比通带低两个数量级，−3 dB 这个浅门限的位置落在噪声里，\n"
             "   拐点估计不可信。\n\n"
             "   → **结论：噪声底法测不出本器件带宽的绝对赫兹数。**\n"
