@@ -998,12 +998,45 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_clean: bool) -> Non
     )
 
 
+USAGE = f"""\
+用法：
+  probe_bandwidth.py [每档秒数]           真机取证（需已授权蓝牙的终端）
+  probe_bandwidth.py --self-test [秒数]   合成标定，不连设备
+  probe_bandwidth.py --help
+
+每档秒数默认 {DEFAULT_SECONDS:.0f}。七档全测：参考档 0x00(256 Hz) 先单独采一次，
+其余 {len(SWEEP_CODES)} 档作为候选逐个扫，**共 {len(SWEEP_CODES) + 1} 次采集**，
+总时长约为每档秒数的 {len(SWEEP_CODES) + 1} 倍，再加上每档写寄存器与稳定的时间。
+
+取证前请确认：设备静置在不振动的地方（本方法量的是噪声底，任何振动都是污染），
+采集速率固定 200 Hz，且先记下 0x1F 的读回值——否则无法区分测的是哪一档。
+"""
+
+
+def _parse_seconds(raw: str) -> float:
+    """把秒数解析成正的浮点数；给不出就退出并说清楚，不抛栈。"""
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise SystemExit(f"秒数要是一个数，收到的是 {raw!r}\n\n{USAGE}") from None
+    if seconds <= 0:
+        raise SystemExit(f"秒数要是正数，收到的是 {seconds}\n\n{USAGE}")
+    return seconds
+
+
 async def main() -> int:
     arguments = sys.argv[1:]
+    # 手写解析而不是 argparse：这个工具是交给人在终端里手敲的，参数只有两个，
+    # 但打错时必须给出能照做的提示——上一版 `--help` 直接抛 traceback。
+    if arguments and arguments[0] in {"-h", "--help"}:
+        print(USAGE, end="")
+        return 0
     if arguments and arguments[0] == "--self-test":
-        seconds = float(arguments[1]) if len(arguments) > 1 else DEFAULT_SECONDS
+        seconds = _parse_seconds(arguments[1]) if len(arguments) > 1 else DEFAULT_SECONDS
         return _self_test(seconds)
-    seconds = float(arguments[0]) if arguments else DEFAULT_SECONDS
+    if arguments and arguments[0].startswith("-"):
+        raise SystemExit(f"认不得的选项 {arguments[0]!r}\n\n{USAGE}")
+    seconds = _parse_seconds(arguments[0]) if arguments else DEFAULT_SECONDS
     return await _run_probe(seconds)
 
 
