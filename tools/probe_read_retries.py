@@ -78,7 +78,7 @@ from pathlib import Path
 
 from wt901.device import WT901Device
 from wt901.discovery import scan
-from wt901.errors import WT901Error
+from wt901.errors import TransportTimeoutError, WT901Error
 from wt901.protocol.registers import Register
 
 DEFAULT_READS = 30
@@ -102,6 +102,7 @@ def summarize(results: list[dict[str, object]]) -> dict[str, object]:
     total = len(results)
     timeouts = sum(1 for item in results if item["outcome"] == "timeout")
     anomalies = sum(1 for item in results if item["outcome"] == "anomalous")
+    errors = sum(1 for item in results if item["outcome"] == "error")
     successes = [
         float(item["elapsed"]) for item in results if item["outcome"] == "ok"
     ]
@@ -110,6 +111,7 @@ def summarize(results: list[dict[str, object]]) -> dict[str, object]:
         "reads": total,
         "timeouts": timeouts,
         "anomalous": anomalies,
+        "errors": errors,
         "failure_rate": failures / total if total else 0.0,
         "median_s": statistics.median(successes) if successes else None,
         "p90_s": (
@@ -124,6 +126,13 @@ def judge(
     early: dict[str, object], late: dict[str, object], control: dict[str, object]
 ) -> str:
     """按预注册门槛判读**一个寄存器在一次连接内**的三相对比。"""
+    errors = sum(int(phase["errors"]) for phase in (early, late, control))
+    if errors:
+        return (
+            f"作废：出现 {errors} 次非超时错误（链路断开一类）。那不是本实验要量的"
+            "东西，掺进来会污染「早期读不可靠」的证据。重跑。"
+        )
+
     late_rate = float(late["failure_rate"])
     if late_rate > BAD_LINK_FAILURE_RATE:
         return (
@@ -162,9 +171,10 @@ def judge(
             else "超时为主 —— 重试是对症的处置"
         )
         verdict = f"早期更不可靠：失败率高出 {gap:.0%}（≥ 15 个百分点）。{mode}"
-    elif gap <= -SIGNIFICANT_FAILURE_GAP:
-        verdict = f"反常：早期反而更好（低 {-gap:.0%}）。需重测。"
     else:
+        # 没有「早期反而显著更好」这一支：上面的作废闸已经把 late 失败率卡在 5%
+        # 以内，所以 gap 最低只能到 −5%，永远够不到 −15% 的显著门槛。写一支
+        # 够不到的分支只会让读的人以为它会发生。
         verdict = (
             f"测不出：失败率差 {gap:+.0%}，未达 15 个百分点。"
             "**这是「测不出」，不是「不存在」**——N=30 分辨不了更小的差别。"
@@ -176,11 +186,21 @@ async def _one_read(device: WT901Device, register: int) -> dict[str, object]:
     started = time.monotonic()
     try:
         response = await device.registers.read(register)
-    except WT901Error:
+    except TransportTimeoutError:
         return {
             "register": register,
             "outcome": "timeout",
             "elapsed": time.monotonic() - started,
+        }
+    except WT901Error as exc:
+        # 非超时的错误（链路断了、写失败）**不是**本实验要量的东西。把它记成
+        # timeout 会往「早期读不可靠」的证据里掺入完全不同的成因。单列一态，
+        # 并让判读见到它就作废这次连接。
+        return {
+            "register": register,
+            "outcome": "error",
+            "elapsed": time.monotonic() - started,
+            "detail": f"{type(exc).__name__}: {exc}",
         }
     elapsed = time.monotonic() - started
     # 回帧内容异常与超时成因不同，必须分开计（RAY-305 处理过全零那一类）。

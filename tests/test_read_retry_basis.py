@@ -31,12 +31,18 @@ from tools.probe_read_retries import (
 
 
 def _results(
-    *, ok: int = 0, timeout: int = 0, anomalous: int = 0, elapsed: float = 0.05
+    *,
+    ok: int = 0,
+    timeout: int = 0,
+    anomalous: int = 0,
+    error: int = 0,
+    elapsed: float = 0.05,
 ) -> list[dict[str, object]]:
     return (
         [{"outcome": "ok", "elapsed": elapsed} for _ in range(ok)]
         + [{"outcome": "timeout", "elapsed": 0.5} for _ in range(timeout)]
         + [{"outcome": "anomalous", "elapsed": elapsed} for _ in range(anomalous)]
+        + [{"outcome": "error", "elapsed": elapsed} for _ in range(error)]
     )
 
 
@@ -144,6 +150,44 @@ def test_reversed_direction_is_called_out_not_silently_accepted() -> None:
     verdict = judge(early, late, control)
     # late 相 33% 失败率先触发作废，这正是对的顺序。
     assert "作废" in verdict
+
+
+def test_no_reachable_reversed_verdict() -> None:
+    """「早期反而显著更好」够不到，所以判读里不该有那一支。
+
+    作废闸把 late 失败率卡在 5% 以内，于是 gap = early − late 最低只能到 −5%，
+    永远够不到 −15% 的显著门槛。穷举 late 相在闸内的所有取值验证这一点：写一支
+    够不到的分支，只会让读的人以为它会发生。
+    """
+    control = summarize(_results(ok=30))
+    for late_failures in range(2):  # 0/30 与 1/30 都 <= 5%
+        late = summarize(_results(ok=30 - late_failures, timeout=late_failures))
+        early = summarize(_results(ok=30))  # 早期完美，最有利于「反常」出现
+        verdict = judge(early, late, control)
+        assert "反常" not in verdict
+
+
+def test_non_timeout_errors_void_the_run() -> None:
+    """链路断开一类的错误不是本实验要量的东西，掺进来会污染证据。
+
+    此前所有 WT901Error 都被记成 "timeout"——那会把「链路断了」算进「早期读不
+    可靠」的证据里。
+    """
+    early = summarize(_results(ok=28, error=2))
+    late = summarize(_results(ok=30))
+    control = summarize(_results(ok=30))
+    verdict = judge(early, late, control)
+    assert "作废" in verdict
+    assert "非超时错误" in verdict
+    assert "早期更不可靠" not in verdict
+
+
+def test_errors_are_counted_separately_from_timeouts() -> None:
+    summary = summarize(_results(ok=25, timeout=3, error=2))
+    assert summary["timeouts"] == 3
+    assert summary["errors"] == 2
+    # 非超时错误不计入失败率——它们让整次连接作废，而不是拉高一个比率。
+    assert summary["failure_rate"] == pytest.approx(3 / 30)
 
 
 # ----- 预注册的门槛与实验形状 -----------------------------------------------
