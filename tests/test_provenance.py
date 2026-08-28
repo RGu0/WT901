@@ -231,3 +231,94 @@ def test_protocol_doc_records_the_three_way_magnetic_conflict() -> None:
     text = _PROTOCOL_DOC.read_text(encoding="utf-8")
     assert "三份上游资料对磁场量纲的说法互相矛盾" in text
     assert "不做取舍" in text
+
+
+# ===== RAY-308 scope 2：官方写了、本库没有的设备知识 =========================
+#
+# 这一组守的是**缺口**，不是措辞。缺口比错话更难发现：错话读起来别扭，缺口读起来
+# 一切正常——`docs/protocol.md` 少一节坐标系说明，看上去和完整的一模一样。
+#
+# 所以这里断言的是「某几个关键词必须出现在文档里」。它挡不住写得敷衍，但挡得住
+# 整段被删掉或重构时丢失。
+
+
+def _doc() -> str:
+    return _PROTOCOL_DOC.read_text(encoding="utf-8")
+
+
+def test_records_the_coordinate_frame_and_euler_order() -> None:
+    """东北天、X 左 / Y 前 / Z 上、Z-Y-X 旋转顺序。
+
+    没有这几条，角度数据是绕哪个轴的都说不清——`Roll` 对应 X 轴这件事本库到处在用，
+    却从来没写下依据。
+    """
+    text = _doc()
+    assert "东北天" in text
+    assert "Z-Y-X" in text
+    assert "向左为 X 轴" in text
+
+
+def test_records_that_pitch_folds_back_past_90_degrees() -> None:
+    """±90° 折回与三轴耦合**不是设备故障**，这句话必须在文档里。
+
+    不写，下游看到「只绕一个轴转、另一个轴的读数却在跳」会去查链路、查解码、查标定
+    ——那三处都没有问题。
+    """
+    text = _doc()
+    assert "固有特性" in text
+    assert "不是设备故障" in text
+    # 折回的具体后果（X 轴角度会大于 180°）要写明，否则读者不知道该拿什么现象对号入座。
+    assert "大于 180" in text
+
+
+def test_register_table_covers_the_official_range_not_just_what_is_exposed() -> None:
+    """§5 要如实反映官方表的范围，并标注开放状态。
+
+    只列本库开放的那些，会让下一个人以为官方表就这么大——而它大得多，缺的那部分正是
+    下一次要不要补的候选。
+    """
+    text = _doc()
+    # 官方表里本库没开放的条目，至少这几组要在文档里出现。
+    for symbol in ("BAUD", "AXOFFSET", "HXOFFSET", "D0MODE"):
+        assert symbol in text, f"官方表的 {symbol} 没被记下来"
+    # 三种开放状态的记号要都在，否则「标注开放状态」这条落不了地。
+    assert "**登记**" in text or "| 登记" in text
+    assert "保留" in text
+
+
+def test_records_that_the_official_register_table_is_itself_incomplete() -> None:
+    """`0x1F`/`0x23`/`0x24`/`0x27`/`0x64`/`0x69` 不在官方地址表里，却在指令小节里。
+
+    不写下来，下一个人会以为**本库多写了东西**，然后去删。
+    """
+    text = _doc()
+    assert "官方寄存器地址表本身并不完整" in text
+    assert "是那张表漏了，不是本库编的" in text
+
+
+def test_records_the_vertical_mounting_hard_constraint() -> None:
+    """垂直安装**必须 Y 轴箭头朝上**。装错不报错，数据一直偏。"""
+    text = _doc()
+    assert "Y 轴箭头朝上" in text
+
+
+def test_bandwidth_row_no_longer_claims_only_three_rungs() -> None:
+    """§5 的 `0x1F` 那一行曾停在三档，而 §6.2 已是七档（RAY-304 只改了后者）。
+
+    同一份文档里两处互相矛盾，读者信哪个全看他先翻到哪一页。
+    """
+    text = _doc()
+    assert "开放 `0x00`=256 Hz、`0x03`=42 Hz、`0x04`=20 Hz" not in text
+    assert "七档全部登记" in text
+
+
+def test_records_the_battery_ladder_conflict() -> None:
+    """协议文档与 SDK 给了两张不同的电量阶梯表，同一原始值最多差 25 个百分点。
+
+    这条**不在 scope 2 原定的五条里**，是通读协议文档时撞上的。既然发现了，就不能
+    让本库那张表继续以「事实」的姿态单独立着——那正是这一系列 Issue 要修的毛病。
+    """
+    text = _doc()
+    assert "官方协议文档给的是另一张表，两者对不上" in text
+    # 本库没有改行为，文档必须说清这一点，免得读者以为已经换表了。
+    assert "本库的行为一个字没改" in text
