@@ -270,3 +270,85 @@ def test_protocol_doc_records_the_tightened_criteria() -> None:
     # 那句「÷120 几乎可以直接排除」的适用范围必须被限定住。
     flattened = text.replace("\n> ", "").replace("\n", "")
     assert "只在type 2/4/5 上成立" in flattened
+
+
+# ----- 设备选择：连不上时最要紧的是「扫到了什么」 ---------------------------
+
+
+class _Found:
+    def __init__(self, address: str, rssi: int | None) -> None:
+        self.address = address
+        self.rssi = rssi
+        self.name = "WT901BLE68"
+
+
+async def test_pick_device_takes_the_strongest_not_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """台架上那台几乎总是最近的一台，而扫描结果的顺序不保证任何东西。
+
+    此前直接取 `devices[0]`——两台设备在场时，选中哪台全凭运气。
+    """
+    import tools.probe_mag_scale as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        assert timeout == probe.SCAN_TIMEOUT
+        return [_Found("far", -90), _Found("near", -47), _Found("mid", -70)]
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    chosen = await probe.pick_device(None)
+    assert chosen is not None
+    assert chosen.address == "near"
+
+
+async def test_pick_device_honours_an_explicit_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.probe_mag_scale as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        return [_Found("far", -90), _Found("near", -47)]
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    chosen = await probe.pick_device("far")
+    assert chosen is not None
+    assert chosen.address == "far"
+
+
+async def test_pick_device_reports_when_nothing_was_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """扫不到与连不上表现完全不同，不该被一个太短的扫描超时混在一起。"""
+    import tools.probe_mag_scale as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        return []
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    assert await probe.pick_device(None) is None
+
+
+async def test_pick_device_refuses_an_address_that_is_not_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.probe_mag_scale as probe
+
+    async def fake_scan(timeout: float) -> list[_Found]:
+        return [_Found("near", -47)]
+
+    monkeypatch.setattr(probe, "scan", fake_scan)
+    assert await probe.pick_device("somewhere-else") is None
+
+
+def test_scan_timeout_matches_the_other_probes() -> None:
+    """默认的 5 秒在设备刚上电或信号偏弱时常扫不到；tools/ 里其它探测脚本用 15。"""
+    from tools.probe_mag_scale import SCAN_TIMEOUT
+
+    assert SCAN_TIMEOUT == 15.0
+
+
+def test_take_address_extracts_the_flag() -> None:
+    from tools.probe_mag_scale import take_address
+
+    assert take_address(["49.6", "--address", "ABC", "300"]) == ("ABC", ["49.6", "300"])
+    assert take_address(["49.6"]) == (None, ["49.6"])

@@ -82,7 +82,8 @@ import sys
 from pathlib import Path
 
 from wt901.device import WT901Device
-from wt901.discovery import scan
+from wt901.discovery import DiscoveredDevice, scan
+from wt901.errors import TransportError
 from wt901.protocol import units
 
 DEFAULT_SAMPLES = 300
@@ -101,6 +102,88 @@ ACCEPT_TOLERANCE = 0.15
 """相对偏差 <= 这个值算「对上了」。"""
 REJECT_TOLERANCE = 0.30
 """相对偏差 > 这个值算「排除」。介于两者之间的是「不确定」。"""
+
+
+
+SCAN_TIMEOUT = 15.0
+"""秒。与 ``tools/`` 里其它探测脚本一致。默认的 5 秒在设备刚上电或信号偏弱时
+常常扫不到，而扫不到与连不上的表现完全不同，不该被一个太短的超时混在一起。"""
+
+_CONNECT_HELP = """
+连不上时按这个顺序查：
+
+  1. 设备是不是已经被别的东西连着？维特上位机、另一个还在跑的脚本、或者上一次
+     没退干净的进程都会占着它。BLE 外设同一时刻只接受一个中心设备。
+  2. 设备离主机多远？上面列出的 rssi 低于约 -85 dBm 时连接常常超时。
+  3. 设备电量是不是快没了？低电时广播还在、连接会失败。
+  4. 都不是的话跑 tools/smoke_ble.py —— 它不按名字过滤，能分开「设备不在范围」
+     与「蓝牙本身没工作」。
+"""
+
+
+def take_address(argv: list[str]) -> tuple[str | None, list[str]]:
+    """从参数里取出 ``--address <地址>``，返回 ``(地址, 其余参数)``。"""
+    if "--address" not in argv:
+        return None, argv
+    index = argv.index("--address")
+    if index + 1 >= len(argv):
+        raise SystemExit("--address 后面要跟一个地址")
+    return argv[index + 1], argv[:index] + argv[index + 2 :]
+
+
+async def pick_device(address: str | None) -> DiscoveredDevice | None:
+    """扫描并选一台设备，**把扫到的都打印出来**。
+
+    连接失败时最要紧的信息是「扫到了什么、信号多强」。此前这里直接取
+    ``devices[0]`` 且连接前什么都不打印，超时的回溯里看不出设备到底在不在范围内。
+    """
+    devices = await scan(SCAN_TIMEOUT)
+    if not devices:
+        print(f"扫描 {SCAN_TIMEOUT:.0f} s 没有发现 WT 设备。")
+        print(_CONNECT_HELP)
+        return None
+
+    print(f"扫描到 {len(devices)} 台 WT 设备：")
+    for item in devices:
+        print(f"  {item.address}  rssi={item.rssi}  name={item.name!r}")
+
+    if address is not None:
+        for item in devices:
+            if item.address == address:
+                print(f"\n按 --address 选中 {address}\n")
+                return item
+        print(f"\n扫到的设备里没有 {address}。")
+        return None
+
+    # 取信号最强的那台，不是列表里的第一台：台架上那台几乎总是最近的一台，
+    # 而扫描结果的顺序不保证任何东西。
+    chosen = max(devices, key=lambda d: d.rssi if d.rssi is not None else -999)
+    print(f"\n选中信号最强的：{chosen.address}（rssi={chosen.rssi}）")
+    if len(devices) > 1:
+        print("要指定别的设备：--address <地址>")
+    print()
+    return chosen
+
+
+async def connect_probe(address: str | None) -> WT901Device | None:
+    """连接，失败时重新扫描再试一次。
+
+    macOS 上扫描得到的句柄是 CoreBluetooth 的会话内标识，可能在两次扫描之间失效；
+    重新扫描拿一个新句柄比拿旧的重试有意义。
+    """
+    for attempt in (1, 2):
+        target = await pick_device(address)
+        if target is None:
+            return None
+        try:
+            return await WT901Device.connect(target)
+        except TransportError as exc:
+            print(f"\n第 {attempt} 次连接失败：{exc}")
+            if attempt == 2:
+                print(_CONNECT_HELP)
+                return None
+            print("重新扫描后再试一次（macOS 上句柄可能已失效）…\n")
+    return None
 
 
 def _solve(matrix: list[list[float]], rhs: list[float]) -> list[float] | None:
@@ -228,18 +311,18 @@ def judge(measured: float, mag_type: int) -> tuple[str, list[tuple[str, float, f
     return "不确定：有候选落在 15%–30% 之间，判据不判读这种情形。重采。", scored
 
 
-async def main(igrf_ut: float, samples: int) -> int:
-    devices = await scan()
-    if not devices:
-        print("没有扫描到设备。")
+async def main(igrf_ut: float, samples: int, address: str | None) -> int:
+    connected = await connect_probe(address)
+    if connected is None:
         return 1
 
-    async with await WT901Device.connect(devices[0]) as device:
+    async with connected as device:
+        device_id = device.device_id
         first = await device.telemetry.read_magnetic_field()
         mag_type = first.mag_type
         sdk = _sdk_coefficient(mag_type)
 
-        print(f"设备          {devices[0].address}")
+        print(f"设备          {device.device_id}")
         print(f"0x72 (MAGTYPE) {mag_type}")
         print(f"SDK 系数       {sdk if sdk is not None else '未知分档'}")
         print(f"协议文档系数   {DOC_COEFFICIENT}")
@@ -292,7 +375,7 @@ async def main(igrf_ut: float, samples: int) -> int:
 
     payload = {
         "issue": "RAY-312",
-        "device": devices[0].address,
+        "device": device_id,
         "mag_type": mag_type,
         "igrf_total_ut": igrf_ut,
         "samples": len(points),
@@ -334,15 +417,20 @@ async def main(igrf_ut: float, samples: int) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    chosen_address, rest = take_address(sys.argv[1:])
+    if not rest:
         print(__doc__)
-        print("用法：./dev run python tools/probe_mag_scale.py <IGRF 总强度 µT> [采样数]")
+        print(
+            "用法：./dev run python tools/probe_mag_scale.py "
+            "<IGRF 总强度 µT> [采样数] [--address <地址>]"
+        )
         raise SystemExit(2)
     raise SystemExit(
         asyncio.run(
             main(
-                float(sys.argv[1]),
-                int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_SAMPLES,
+                float(rest[0]),
+                int(rest[1]) if len(rest) > 1 else DEFAULT_SAMPLES,
+                chosen_address,
             )
         )
     )
