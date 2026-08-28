@@ -59,6 +59,24 @@ class Transport(abc.ABC):
     async def write(self, data: bytes) -> None:
         """把字节发给设备。"""
 
+    async def read_rssi(self) -> int | None:
+        """连接期的链路信号强度，单位 dBm；这条通道给不出时为 ``None``。
+
+        **不是抽象方法，默认就是 ``None``。** 信号强度是物理链路的属性，只有真
+        实无线传输才可能有；内存传输与录制回放没有链路可测，让它们各写一遍
+        ``return None`` 只是噪音。第三方传输不实现它也不会因此坏掉。
+
+        ``None`` 的意思是「这个量拿不到」，**不是「信号为零」**——与
+        :attr:`~wt901.models.Battery.percent`、
+        :attr:`~wt901.models.Quaternion.is_plausible` 同一条规矩：拿不准的量不
+        给一个看着正常的数。0 dBm 是极强信号，把「读不到」写成 0 会让链路看起来
+        比实际好得多。
+
+        实现者须知：这个方法**不得抛异常**。超时、后端不支持、链路已断——全部
+        落成 ``None``。调用它的是周期轮询，一次读失败不该让轮询任务终止。
+        """
+        return None
+
     def on_data(self, callback: DataCallback | None) -> None:
         """注册接收回调。传 ``None`` 注销。"""
         self._on_data = callback

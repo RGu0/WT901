@@ -146,6 +146,16 @@ class PollerConfig:
     quaternion: float | None = 1.0
     temperature: float | None = 30.0
     battery: float | None = 30.0
+    rssi: float | None = 5.0
+    """链路信号强度的读取周期。
+
+    比其它几项密，因为它测的是**正在变化的东西**：人走动、身体遮挡、设备转向，
+    秒级就能让链路质量变一截。官方 SDK 的读数据线程每 5 轮读一次，同一个量级。
+
+    它也比其它几项便宜——走链路层往返，不占 ``0x61``/``0x71`` 通道的带宽（见
+    :meth:`~wt901.transport.ble.BleTransport.read_rssi`）。在拿不到 RSSI 的平台
+    上这一项等于每 5 秒做一次 ``getattr`` 判断，代价可以忽略。
+    """
 
 
 def _u16(value: int) -> int:
@@ -356,6 +366,22 @@ class Telemetry:
             return f"{major}.{minor}.{patch}"
         return str(low)
 
+    async def read_rssi(self) -> int | None:
+        """连接期的链路信号强度（dBm），取不到时 ``None``。
+
+        **这一项不走寄存器。** 其余每个 ``read_*`` 都是一次 ``0x71`` 往返，这个
+        是链路层的量，直接问传输层要。放在这里只有一个理由：它和电量、温度一样
+        是「周期补充读取的一个量」，而周期读取的调度在
+        :class:`TelemetryPoller` 上——把它放到别处，调用方就得同时盯两个轮询器。
+
+        它与其它几项的差别值得记住：**这是原因侧的量。** 电量、温度描述设备的
+        状态，RSSI 描述**链路**的状态，是唯一一个能在丢包发生之前给出预警的。
+
+        取不到时是 ``None``，永远不是 0。成因与平台限制见
+        :meth:`WT901Device.read_rssi`。本方法不抛异常。
+        """
+        return await self._device.read_rssi()
+
     async def read_device_info(self) -> DeviceInfo:
         """一次性读齐设备身份信息。
 
@@ -410,6 +436,17 @@ class TelemetryPoller:
         :attr:`~wt901.models.Quaternion.is_plausible`**——全零回读会写进这里。"""
         self.temperature_c: float | None = None
         self.battery: Battery | None = None
+        self.rssi: int | None = None
+        """最近一次读到的链路信号强度，单位 dBm。
+
+        ``None`` 有两种成因，**这里区分不了**：从没读到过，或者这个平台根本给
+        不出（只有 macOS 给得出）。两种都意味着同一件事——不要拿它当链路质量的
+        判据。区分方法见 :meth:`WT901Device.read_rssi`。
+
+        与其它三项一样，读失败时保持不变而不是清空。但 RSSI 的「读失败」已经在
+        传输层被吞成 ``None`` 了，所以这里实际上会写进 ``None``——**这是有意的**：
+        一个陈旧的 RSSI 比没有 RSSI 更危险，它正是用来判断此刻链路好不好的。
+        """
 
     @property
     def is_running(self) -> bool:
@@ -425,6 +462,7 @@ class TelemetryPoller:
             (self._config.quaternion, self._poll_quaternion),
             (self._config.temperature, self._poll_temperature),
             (self._config.battery, self._poll_battery),
+            (self._config.rssi, self._poll_rssi),
         ):
             if interval is not None and interval > 0:
                 self._tasks.append(loop.create_task(self._loop(interval, reader)))
@@ -456,6 +494,11 @@ class TelemetryPoller:
 
     async def _poll_quaternion(self) -> None:
         self.quaternion = await self._telemetry.read_quaternion()
+
+    async def _poll_rssi(self) -> None:
+        # 不套 _attempt：传输层承诺不抛，失败已经是 None。这一项是唯一一个
+        # 「读不到就写 None」的——陈旧的信号强度比没有更危险。
+        self.rssi = await self._telemetry.read_rssi()
 
     async def _poll_temperature(self) -> None:
         self.temperature_c = await self._telemetry.read_temperature()

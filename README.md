@@ -104,6 +104,23 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 同理，`DiscoveredDevice.handle` **只在本次扫描会话内有效**，不可持久化、不可跨
 进程传递，也不能把两次扫描的结果拼在一起用。
 
+### 连接期信号强度（RSSI）只有 macOS 拿得到
+
+`await device.read_rssi()` 与 `TelemetryPoller.rssi` 给出连接期的链路信号强度，
+单位 dBm，**拿不到时是 `None`，永远不是 0**（0 dBm 是极强信号）。
+
+| 平台 | 连接期 RSSI |
+|---|---|
+| macOS | 可能可得（`bleak` 只在 CoreBluetooth 后端实现了它） |
+| Linux / Windows | **恒为 `None`** |
+
+这不是本库偷懒：`bleak 0.22.3` 的 `BleakClient` 公开门面根本没有这个方法，
+`BaseBleakClient` 也没声明它，只有 CoreBluetooth 后端的实现类上有。细节与本库
+为它加的锁和超时见 [`docs/protocol.md`](docs/protocol.md) §8.1。
+
+**扫描期的 RSSI 是另一回事**：`DiscoveredDevice.rssi` 来自广播包，各平台都有，但
+连上之后就不再更新。
+
 ### macOS：未授权蓝牙时进程会静默终止
 
 在「系统设置 → 隐私与安全性 → 蓝牙」里授权运行脚本的那个应用（Terminal.app、
@@ -310,6 +327,23 @@ v0.1 仅 BLE。串口透传需要额外的适配器硬件，目前没有该硬�
 `TelemetryPoller` 会周期读磁场/四元数/温度/电量，它与实时数据流抢同一条 BLE 链路。
 实测代价很小（默认配置下 100 Hz 采集掉 0.1%–0.4%），**默认关闭的理由不是代价大**，
 而是「不用的人不该付费」，以及代价随轮询周期缩短线性增长。
+
+### RSSI 是原因侧的量，别拿它替代结果侧指标
+
+`resync_count`、`dropped_samples`、`MergeStats.out_of_order` 都是**结果**——链路
+已经出问题之后它们才动。RSSI 是**原因**侧的，也是唯一一个能在丢包发生**之前**
+给出预警的量。
+
+两者要配合读，不能互相替代：
+
+* 一次 30 分钟采集中途 `resync_count` 开始涨，只看它就只能事后猜「是不是走远
+  了」；配上 RSSI 曲线就能直接看出来。
+* 两台设备同采、其中一台 `dropped_samples` 偏高——是它自己链路差，还是主机侧带
+  宽不够？**RSSI 是区分这两者的那个量。**
+* 反过来，RSSI 一路平稳而 `resync_count` 猛涨，说明问题不在距离上。这同样是结论。
+
+用 `TelemetryPoller` 取（默认每 5 秒一次）。它走链路层，不占 `0x61`/`0x71` 通道
+的带宽。
 
 ### 一个与本库无关但会遇到的类型检查坑
 
