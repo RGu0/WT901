@@ -115,6 +115,8 @@ class DeviceStats:
 
     ``dropped_samples`` 与 ``resync_count`` 是判断「数据可不可信」的两个入口：
     前者说明消费者跟不上，后者说明链路上出现过字节错位。
+    ``dropped_before_connected`` 单独立着而不并进 ``dropped_samples``，因为它说的
+    不是同一件事——它是连接还没就绪时被挡下的帧，不是一条已开始的流里丢了东西。
     """
 
     frames: int = 0
@@ -123,6 +125,13 @@ class DeviceStats:
     register_frames: int = 0
     resync_count: int = 0
     dropped_bytes: int = 0
+    dropped_before_connected: int = 0
+    """连接宣布就绪之前被丢弃的实时数据帧数。
+
+    这些帧到达时配置还没重放完，设备仍按它上电时的状态在推（出厂 10 Hz）。它们
+    不入队也不推进 ``seq``——留着就是把两种采样率混进同一条序列，而重连之后正是
+    最难发现这件事的时刻。数目不为零本身不是故障：每次连接与重连都会有一小段。
+    """
     reconnects: int = 0
     """**完整恢复**的重连次数：连上且配置重放成功才计入。
 
@@ -166,6 +175,7 @@ class WT901Device:
         )
         self._seq = 0
         self._closing = False
+        self._delivering = False
         self._intentional_disconnect = False
         self._reconnect_task: asyncio.Task[None] | None = None
 
@@ -173,6 +183,7 @@ class WT901Device:
         self._samples_emitted = 0
         self._dropped_samples = 0
         self._register_frames = 0
+        self._dropped_before_connected = 0
         self._reconnects = 0
 
         self._register_listener: Callable[[RegisterResponse], None] | None = None
@@ -223,18 +234,26 @@ class WT901Device:
         return device
 
     async def open(self) -> None:
-        """建立连接并开始接收。"""
+        """建立连接并开始接收。
+
+        样本在 ``CONNECTED`` 事件发出之后才开始产生。真机上 ``start_notify`` 在
+        ``connect()`` 内部，通知可能在它返回前就到——那些帧被丢弃并计入
+        :attr:`DeviceStats.dropped_before_connected`，与重连恢复期走的是同一条规则。
+        """
         self._closing = False
+        self._delivering = False
         self._transport.on_data(self._handle_bytes)
         self._transport.on_disconnect(self._handle_disconnect)
         await self._transport.connect()
         self._emit_event(ConnectionEvent(ConnectionState.CONNECTED, self.device_id))
+        self._delivering = True
 
     async def close(self) -> None:
         """停止接收并释放连接。已关闭时调用无副作用。"""
         if self._closing:
             return
         self._closing = True
+        self._delivering = False
 
         # 先取消重连任务：否则它可能在 disconnect 之后又把连接建起来。
         task = self._reconnect_task
@@ -321,13 +340,23 @@ class WT901Device:
             samples=self._samples_emitted,
             dropped_samples=self._dropped_samples,
             register_frames=self._register_frames,
+            dropped_before_connected=self._dropped_before_connected,
             resync_count=self._decoder.resync_count,
             dropped_bytes=self._decoder.dropped_bytes,
             reconnects=self._reconnects,
         )
 
     async def samples(self) -> AsyncIterator[ImuSample]:
-        """按到达顺序产出样本，直到 :meth:`close`。"""
+        """按到达顺序产出样本，直到 :meth:`close`。
+
+        **样本不会在宣布这条连接的** ``CONNECTED`` **事件发出之前被造出来**：连接
+        恢复期（``connect()`` 成功到配置重放完成）到达的帧被丢弃并计入
+        :attr:`DeviceStats.dropped_before_connected`。
+
+        这不等于「你一定先收到 ``CONNECTED`` 再收到样本」——本方法与 :meth:`events`
+        是两条独立队列，通常由两个任务各自消费，跨队列的消费顺序不归本层管。能保证
+        的是产生顺序，那段窗口因此从数百毫秒缩到一个事件循环轮次。
+        """
         if self._output_mode is not OutputMode.MOTION:
             raise ConfigurationError(
                 "设备被声明为位移输出模式（寄存器 0x96 = 1），v0.1 未实现该模式的"
@@ -388,6 +417,12 @@ class WT901Device:
                 if self._output_mode is not OutputMode.MOTION:
                     # 位移模式：不猜测语义，只计数。
                     continue
+                if not self._delivering:
+                    # 连接还没宣布就绪：配置未重放完，设备按上电状态在推。丢掉
+                    # 而不是入队，也不推进 seq——seq 的缺口只该表示「一条已开始
+                    # 的流里丢了东西」，不该被「流还没开始」混进来。
+                    self._dropped_before_connected += 1
+                    continue
                 sample = ImuSample.from_frame(
                     frame,
                     device_id=self.device_id,
@@ -427,6 +462,7 @@ class WT901Device:
 
     def _handle_disconnect(self) -> None:
         """传输层报告对端断开。"""
+        self._delivering = False
         if self._closing or self._intentional_disconnect:
             return
         self._emit_event(ConnectionEvent(ConnectionState.DISCONNECTED, self.device_id))
@@ -512,6 +548,7 @@ class WT901Device:
                         ConnectionState.CONNECTED, self.device_id, attempt=attempt
                     )
                 )
+                self._delivering = True
                 return
         finally:
             self._reconnect_task = None

@@ -445,6 +445,122 @@ async def test_config_replay_failure_is_logged_by_this_library(
     await device.close()
 
 
+# ----- 连接就绪前的样本门控 ------------------------------------------------
+
+
+async def test_frames_during_config_replay_are_dropped_and_counted() -> None:
+    """重放期间设备还按上电状态（出厂 10 Hz）在推，那段数据不该混进序列。
+
+    重放每条寄存器约 0.2 s，200 Hz 下就是约 40 个样本——窗口随配置条数增长，
+    与链路好坏无关。
+    """
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(initial_delay=0.01, max_delay=0.01),
+    )
+    transport.feed(data_frame() * 2)  # 旧连接的两个样本
+
+    async def hook() -> None:
+        # 重放进行中：链路已连上，帧照常到达。
+        transport.feed(data_frame() * 3)
+        await asyncio.sleep(0.01)
+        transport.feed(data_frame() * 2)
+
+    device.on_reconnect(hook)
+    transport.drop()
+    await asyncio.sleep(0.08)
+
+    assert device.stats.dropped_before_connected == 5
+    assert device.stats.samples == 2  # 只有旧连接那两个进了队
+    assert device.stats.frames == 7  # 帧确实都到了，照常计数
+    assert device.stats.dropped_samples == 0  # 与「消费者跟不上」不是一回事
+
+    transport.feed(data_frame())
+    samples = await _take(device, 3)
+    # 被丢的 5 个没有推进 seq：新连接的第一个交付样本仍是 0。
+    assert [s.seq for s in samples] == [0, 1, 0]  # type: ignore[attr-defined]
+    await device.close()
+
+
+async def test_frames_arriving_during_open_are_dropped_and_counted() -> None:
+    """真机上 start_notify 在 connect() 里，通知可能在 open() 返回前就到。
+
+    首连与重连用同一个标志、同一条不变式——「重连管、首连不管」这种不对称迟早
+    被误读成「首连的样本可以早于事件」。
+    """
+
+    class ChattyOnConnect(MemoryTransport):
+        """connect() 内部就开始推数据的传输。"""
+
+        async def connect(self) -> None:
+            await super().connect()
+            self.feed(data_frame() * 2)
+
+    transport = ChattyOnConnect("eager")
+    device = WT901Device(transport)
+    await device.open()
+
+    assert device.stats.dropped_before_connected == 2
+    assert device.stats.samples == 0
+    assert device.stats.frames == 2
+
+    transport.feed(data_frame())
+    (sample,) = await _take(device, 1)
+    assert sample.seq == 0  # type: ignore[attr-defined]
+    await device.close()
+
+
+async def test_register_responses_still_dispatch_while_gated() -> None:
+    """门控只挡实时数据帧。
+
+    重放本身就跑在这条链路上：把 `0x71` 回帧一并挡住，会把这个修复变成新的死锁。
+    """
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(initial_delay=0.01, max_delay=0.01),
+    )
+    seen: list[int] = []
+    device.on_register_response(lambda response: seen.append(response.start_register))
+
+    async def hook() -> None:
+        transport.feed(register_frame(0x03, (0x0008,) * 8))
+        await asyncio.sleep(0.01)
+
+    device.on_reconnect(hook)
+    transport.drop()
+    await asyncio.sleep(0.08)
+
+    assert seen == [0x03]
+    assert device.stats.register_frames == 1
+    assert device.stats.dropped_before_connected == 0
+    await device.close()
+
+
+async def test_gate_stays_shut_when_config_replay_fails() -> None:
+    """RAY-306 的失败路径：链路被主动断开，闸门不得漏开。"""
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(
+            initial_delay=0.01, max_delay=0.01, max_attempts=1
+        ),
+    )
+
+    async def hook() -> None:
+        raise ConnectionLostError("重连后链路又掉了")
+
+    device.on_reconnect(hook)
+    transport.drop()
+    await asyncio.sleep(0.08)
+
+    states = [event.state for event in _drained_events(device)]
+    assert states[-1] is ConnectionState.RECONNECT_FAILED
+
+    transport.feed(data_frame())
+    assert device.stats.dropped_before_connected == 1
+    assert device.stats.samples == 0
+    await device.close()
+
+
 # ----- 位移模式 ------------------------------------------------------------
 
 
