@@ -89,6 +89,14 @@ class ConnectionEvent:
 
     上层**必须**据此判断样本序列的连续性：``seq`` 在每次重连后归零，把跨连接
     的样本当成一条连续序列会得到错误的时间/序号推断。
+
+    本层保证的是：**任何样本都不会在它所属那条连接的** :attr:`~ConnectionState.CONNECTED`
+    **发出之前被造出来**。未就绪窗口内到达的数据帧被丢弃并计入
+    :attr:`DeviceStats.dropped_before_ready`。
+
+    保证到此为止。``samples()`` 与 ``events()`` 是两条独立队列、由两个任务各自
+    消费，**跨队列的先后不归本层管**：分别迭代两者的调用方仍可能先取到样本、
+    后取到那条事件。要严格对齐，就在收到 ``CONNECTED`` 之后再开始取样本。
     """
 
     state: ConnectionState
@@ -114,13 +122,32 @@ class ReconnectPolicy:
 class DeviceStats:
     """链路与采集质量。全部单调递增，跨重连不清零。
 
-    ``dropped_samples`` 与 ``resync_count`` 是判断「数据可不可信」的两个入口：
-    前者说明消费者跟不上，后者说明链路上出现过字节错位。
+    判断「数据可不可信」有三个入口，各指向不同的成因，不要互相替代：
+
+    * ``dropped_samples`` —— 消费者跟不上，队列压力。
+    * ``resync_count`` —— 链路上出现过字节错位。
+    * ``dropped_before_ready`` —— 一段数据产生在连接就绪之前，本层没有交付它。
+
+    三者都不为零时先看最后一条：它说明那段时间设备停在自己的上电配置上，与
+    消费速度和链路质量都无关。
     """
 
     frames: int = 0
     samples: int = 0
     dropped_samples: int = 0
+    dropped_before_ready: int = 0
+    """连接就绪之前到达、因此被丢弃的实时数据帧数。
+
+    「就绪」指本层已发出该条连接的 :attr:`ConnectionState.CONNECTED`。在那之前
+    链路已经在收字节了：``open()`` 里订阅完成到事件发出之间有一小段，重连路径上
+    则隔着一整次配置重放（每条寄存器约 0.2 s）。这段时间设备停在它的上电配置上
+    （出厂 10 Hz），产出的样本与其余部分不是同一个采样率。
+
+    这些帧被丢弃而不是缓冲后补发——补发只是把两种采样率换个时间混进同一条序列。
+
+    **不要和** ``dropped_samples`` **混着看**：那条说「消费者跟不上」，是队列压力；
+    这条说「流还没开始」，与消费速度无关。两者都不为零时，先看这条。
+    """
     register_frames: int = 0
     resync_count: int = 0
     dropped_bytes: int = 0
@@ -167,12 +194,14 @@ class WT901Device:
         )
         self._seq = 0
         self._closing = False
+        self._delivering = False
         self._intentional_disconnect = False
         self._reconnect_task: asyncio.Task[None] | None = None
 
         self._frames = 0
         self._samples_emitted = 0
         self._dropped_samples = 0
+        self._dropped_before_ready = 0
         self._register_frames = 0
         self._reconnects = 0
 
@@ -224,18 +253,27 @@ class WT901Device:
         return device
 
     async def open(self) -> None:
-        """建立连接并开始接收。"""
+        """建立连接并开始接收。
+
+        ``connect()`` 一返回通知就已订阅，字节随时会到，而 ``CONNECTED`` 事件还
+        没发出。这段窗口里到达的实时数据帧被丢弃并计入
+        :attr:`DeviceStats.dropped_before_ready`；重连路径上是同一条不变式，
+        只是那边的窗口大得多（隔着一整次配置重放）。
+        """
         self._closing = False
+        self._delivering = False
         self._transport.on_data(self._handle_bytes)
         self._transport.on_disconnect(self._handle_disconnect)
         await self._transport.connect()
         self._emit_event(ConnectionEvent(ConnectionState.CONNECTED, self.device_id))
+        self._delivering = True
 
     async def close(self) -> None:
         """停止接收并释放连接。已关闭时调用无副作用。"""
         if self._closing:
             return
         self._closing = True
+        self._delivering = False
 
         # 先取消重连任务：否则它可能在 disconnect 之后又把连接建起来。
         task = self._reconnect_task
@@ -321,6 +359,7 @@ class WT901Device:
             frames=self._frames,
             samples=self._samples_emitted,
             dropped_samples=self._dropped_samples,
+            dropped_before_ready=self._dropped_before_ready,
             register_frames=self._register_frames,
             resync_count=self._decoder.resync_count,
             dropped_bytes=self._decoder.dropped_bytes,
@@ -449,6 +488,15 @@ class WT901Device:
                 if self._output_mode is not OutputMode.MOTION:
                     # 位移模式：不猜测语义，只计数。
                     continue
+                if not self._delivering:
+                    # 这条连接的 CONNECTED 还没发出：链路在收字节，但设备停在它
+                    # 的上电配置上，这批样本与其余部分不是同一个采样率。丢掉并
+                    # 单独计数——补发只会把两种采样率混进同一条序列。
+                    #
+                    # seq 不推进：CONNECTED 之后第一个交出去的样本仍是 seq 0，
+                    # 于是 seq 的缺口只表示背压丢弃，不掺「流还没开始」。
+                    self._dropped_before_ready += 1
+                    continue
                 sample = ImuSample.from_frame(
                     frame,
                     device_id=self.device_id,
@@ -488,6 +536,10 @@ class WT901Device:
 
     def _handle_disconnect(self) -> None:
         """传输层报告对端断开。"""
+        # 无条件关门：这条连接已经没了，之后到达的任何字节都属于下一条连接的
+        # 未就绪窗口。三条进入路径（正常断连、close()、重放失败后的主动断开）
+        # 都必须收敛到同一个状态，否则「就绪」会随断开的原因而不同。
+        self._delivering = False
         if self._closing or self._intentional_disconnect:
             return
         self._emit_event(ConnectionEvent(ConnectionState.DISCONNECTED, self.device_id))
@@ -522,6 +574,9 @@ class WT901Device:
                 await asyncio.sleep(self._policy.delay_for(attempt))
                 if self._closing:
                     return
+                # 连接动作之前先关门。真实后端会在断连时回调 on_disconnect
+                # 把它关上，但不能把不变式的成立寄托在后端一定回调上。
+                self._delivering = False
                 try:
                     await self._transport.connect()
                 except TransportError as exc:
@@ -573,6 +628,7 @@ class WT901Device:
                         ConnectionState.CONNECTED, self.device_id, attempt=attempt
                     )
                 )
+                self._delivering = True
                 return
         finally:
             self._reconnect_task = None
