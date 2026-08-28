@@ -125,21 +125,24 @@ def _coerce_mounting(value: Mounting | int) -> Mounting:
 
 
 def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
-    """把取值收敛到已登记的档位，其余一律拒绝。
+    """把取值收敛到上游表列出的七档（``0x00``–``0x06``），其余一律拒绝。
 
     措辞与 :func:`_coerce_return_rate` 的「未核实」**有意不同**：速率的每一档都在
     真机上量过，带宽一档都没有（见 :class:`Bandwidth`）。这里拒绝的理由因此只有
     一条——防止**误**写一个没人看过的编码让设备进入未知状态，而那种故障在现场表现
-    为「数据不对但连接正常」。这条理由与证据强度无关，所以拒绝照旧；但不能借它
-    宣称被放行的那三档已经核实过。
+    为「数据不对但连接正常」。
+
+    七档齐备之后这条理由**没有变弱**，只是白名单的边界从「本库登记过的」挪到了
+    「上游表列出的」：``0x02`` 打成 ``0x20`` 照样被挡下。但白名单仍然不是背书——
+    放行一个编码只表示上游表列出了它，不表示那个赫兹数被核实过。
     """
     try:
         return Bandwidth(value)
     except ValueError:
         raise UnsupportedRegisterError(
-            f"带宽编码 0x{int(value):02X} 未登记。"
-            f"当前登记：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}"
-            "（标称值来自维特通用编码表，本库未实测，见 Bandwidth 文档）。"
+            f"带宽编码 0x{int(value):02X} 不在上游表列出的 0x00-0x06 内。"
+            f"已登记：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}"
+            "（标称值来自维特通用编码表，本库一档都未实测，见 Bandwidth 文档）。"
         ) from None
 
 
