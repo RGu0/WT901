@@ -40,6 +40,11 @@
 ``max_latency=None`` 恢复严格归并。它适用于回放这类**有限且不会中断**的流，那里
 确定性比活性重要；对着真实设备用它，等于把「一台掉线」变成「整条流挂起」。
 
+``max_latency=0`` 是另一头，含义是「一个样本都不等」：每次都直接从手头已有的样本
+里发最小的，实际上等于不归并。它被接受而不是被拒绝，因为它自曝——
+:attr:`MergeStats.emitted_while_stalled` 会逼近 :attr:`MergeStats.emitted`。想要的
+若是「等齐再发」，那是 ``None``，不是 ``0``：这两个值在直觉上容易反过来。
+
 ## 不做时钟同步补偿
 
 ``t_host`` 是主机收到 BLE 通知的时刻，含蓝牙栈抖动。两台设备之间的真实采样时刻
@@ -72,7 +77,18 @@ class MergeStats:
 
     emitted: int = 0
     out_of_order: int = 0
-    """``t_host`` 早于上一个已发样本的样本数。非零说明超时路径被走到了。"""
+    """``t_host`` 早于**此前已发出的最大 ``t_host``** 的样本数。非零说明超时路径
+    被走到了。
+
+    基准是一条高水位线，不是「上一个已发样本」：乱序的样本不推进这条线，所以一串
+    连续迟到的样本里的**每一个**都计一次，而不是整串算一次。两个定义能差好几倍——真实的抖动形状是「一条流卡住若干个
+    采样周期，再把攒下的一次吐出」，按相邻逆序只算 1 处，按高水位则等于攒下的
+    样本个数。
+
+    选高水位是因为它数的是**调用方需要重排的样本总数**：要做时间对齐的下游，
+    每一个越过水位线的样本都得单独处理一遍，相邻逆序数会低估这份工作量。代价
+    是这个数不能读作「链路抖了几次」——那是 :attr:`latency_flushes`。
+    """
     latency_flushes: int = 0
     """等待预算超时的次数。
 
@@ -125,6 +141,7 @@ class MergedStream:
         *,
         max_latency: float | None = DEFAULT_MAX_LATENCY,
     ) -> None:
+        # 只拒负数：0 是合法的，含义见模块文档「一个样本都不等」那一段。
         if max_latency is not None and max_latency < 0:
             raise ValueError("max_latency 不能为负；严格归并请传 None")
         self._devices = tuple(devices)
@@ -262,6 +279,10 @@ class MergedStream:
         self, source: _Source, sample: ImuSample, *, stalled: bool = False
     ) -> ImuSample:
         source.sample = None
+        # 只有不乱序的样本才推进 _last_t，于是它是一条高水位线，而不是「上一个
+        # 已发样本」。这不是遗漏，是 out_of_order 的语义所在：推进了的话，一串
+        # 连续迟到的样本只有第一个会被计到——后面几个相对彼此是升序的，而下游
+        # 要重排的恰恰是它们全部。
         if self._last_t is not None and sample.t_host < self._last_t:
             self._stats.out_of_order += 1
         else:
