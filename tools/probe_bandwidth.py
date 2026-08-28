@@ -1026,11 +1026,9 @@ def _self_test(seconds: float) -> int:
     )
     pollution_clean, pollution_dirty = _pollution_case(count)
     bias = _cutoff_bias(pollution_clean, pollution_dirty)
-    cases = {
-        "clean": clean_case,
-        "pollution": pollution_dirty,
-        "short": _short_case(),
-    }
+    # 只放「失败模式」用例：``case == "clean"`` 的门槛由下面那个分支单独处理，
+    # 因为对它们而言「干净数据触发」本身就是结论，没有第二个用例可比。
+    cases = {"pollution": pollution_dirty, "short": _short_case()}
     # 分不开时可用的豁免依据：必须是**实测**出来的，不能只是台账里那句话。
     harmless_checks = {
         "MAX_PLATEAU_SPREAD": (
@@ -1362,9 +1360,12 @@ def _report(outcomes: list[_Outcome], ref_segments: int, ref_defects: int) -> No
         tripped = [value for value in readings if _gate_trips(gate, value)]
         if not tripped:
             continue
-        worst = max(tripped) if gate.trips_when == "above" else min(tripped)
         if gate.constant == "MIN_DYNAMIC_RANGE_DB":
-            break  # 这一道有专门的交付说明，见下
+            # 这一道不在这里报：它不过意味着「本方法测不出来」，是一种完整交付，
+            # 不是「重采」。专门的说明在下面。用 continue 而不是 break，这样
+            # 将来在它后面加门槛也不会被悄悄跳过。
+            continue
+        worst = max(tripped) if gate.trips_when == "above" else min(tripped)
         print(
             f"\n❌ 前置门槛 {gate.constant} 不过：实测最差 {worst:g}，"
             f"门槛 {'≤' if gate.trips_when == 'above' else '≥'}{gate.limit:g}。\n"
