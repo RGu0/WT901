@@ -157,3 +157,19 @@ def test_changelog_has_a_section_for_the_current_version() -> None:
     """
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     assert f"## {wt901.__version__}" in changelog
+
+
+def test_readme_install_examples_point_at_the_current_version() -> None:
+    """README 的安装示例必须跟着版本走。
+
+    发布 0.3.0 时这两行还停在 `v0.2.0`——照着装的人会拿到一个缺了 `0x71` 解码宽度
+    修复的版本，而那正是 RAY-320 立项要解决的问题本身。钉住它，别再发生第二次。
+    """
+    import wt901
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    tag = f"v{wt901.__version__}"
+    assert f'tag = "{tag}"' in readme, f"README 的 uv 源示例没指向 {tag}"
+    assert f"@{tag}" in readme, f"README 的 pip 示例没指向 {tag}"
