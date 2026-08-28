@@ -178,6 +178,12 @@ MAX_PLATEAU_LEVEL = 0.40
    红噪声（1/f + 环境），高频没那么多东西可折，参考档低频不被抬高——**平台接近 1
    才是真机干净数据的正常值**。
 
+   审阅期复核证实了这个解释：同一套合成只把噪声颜色注入到**器件滤波器之前**，白噪声
+   给出 0.212–0.243，红噪声 α=0.99 给出 0.830–0.997、α=0.999 给出 0.889–1.058——后者
+   正是真机实测的区间。下一轮重标定用 α≈0.99–0.999。
+   （复核时第一次把红化加在合成**之后**，结果三位小数完全不变：同一线性滤波器同时
+   作用于候选与参考，相除时精确抵消。验证关于 R̂ 的假设，扰动必须只作用于单路。）
+
    数据本身也反驳了本门槛的理由（「R̂ 的形状不再由滤波器决定」）：那一轮里形状清清
    楚楚随编码变化（``0x01``/``0x02`` 平坦，``0x05``/``0x03`` 约 −8 dB，``0x06``/``0x04``
    约 −13 dB）。
@@ -557,6 +563,7 @@ def _self_test(seconds: float) -> int:
     observed: dict[float, list[float]] = {truth: [] for truth in _SELF_TEST_TRUTHS}
     worst_spread = 0.0
     worst_level = 0.0
+    best_floor = math.inf     # 地板越小动态范围越大，故取最小者代表最好情况
 
     for order in (1, 2, 3):
         for trial in range(3):
@@ -572,7 +579,9 @@ def _self_test(seconds: float) -> int:
                     for i in range(3)
                 ]
                 _, power, _ = _average_axes(axes, _SELF_TEST_FS)
-                ratio, spread, level, _ = _ratio_curve(freqs, power, ref_power)
+                ratio, spread, level, floor = _ratio_curve(freqs, power, ref_power)
+                if math.isfinite(floor) and floor > 0:
+                    best_floor = min(best_floor, floor)
                 row_spread = max(row_spread, spread)
                 worst_spread = max(worst_spread, spread)
                 # 只有窄档参与门槛标定：宽档（98/188 Hz）与 256 Hz 参考档在通带
@@ -621,6 +630,28 @@ def _self_test(seconds: float) -> int:
         print(f"\n干净数据：窄档（≤{PLATEAU_LEVEL_MAX_NOMINAL:.0f} Hz）平台绝对水平最高 "
               f"{worst_level:.3f}（门槛 ≤{MAX_PLATEAU_LEVEL}），离散最高 "
               f"{worst_spread:.2f}。")
+
+    # ---- 动态范围：这道门槛此前从未被标定评估过 ----
+    #
+    # 预注册了「可用动态范围 ≥ MIN_DYNAMIC_RANGE_DB」，也建了这套标定，但标定只查
+    # 平台水平、平台离散和区间还原，**从来没拿这道门槛跑过自己的合成数据**。补上
+    # 之后才看清：干净合成数据也从未接近过门槛。也就是说「本方法过不了自己那道门槛」
+    # 在上真机之前就是可判定的，标定手上有全部所需信息，只是没去查——代价是真机上
+    # 白跑了两轮。RAY-304 已据此定论，见 docs/protocol.md §6.2。
+    best_db = _dynamic_range_db(best_floor)
+    print(
+        f"\n干净合成数据能达到的**最好**动态范围：{best_db:.1f} dB"
+        f"（门槛 ≥{MIN_DYNAMIC_RANGE_DB:.0f} dB）"
+    )
+    if best_db < MIN_DYNAMIC_RANGE_DB:
+        print(
+            "⚠️ **本方法在干净合成数据上就达不到自己预注册的动态范围门槛。**\n"
+            "   这不是标定坏了，是方法不适用：噪声底在器件滤波器之后又被一层共同的\n"
+            "   地板（ADC 量化 / 数字化 / 链路）压住，比值压不下去，−3 dB 拐点无从谈起。\n"
+            "   真机已于 2026-08-28 跨两台设备实测确认（6.0–13.8 dB），RAY-304 据此\n"
+            "   定论「噪声底法测不出绝对赫兹数」。**不要再拿它去跑真机**——要 40 dB\n"
+            "   得改用主动激励（已知频率、幅度远高于地板的振动输入，扫频测传递函数）。"
+        )
 
     # ---- 污染用例：证明新判据挡得下旧判据挡不下的东西 ----
     polluted_level, polluted_spread = _pollution_case(count)
