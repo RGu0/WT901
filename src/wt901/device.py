@@ -72,6 +72,15 @@ class ConnectionState(Enum):
     RECONNECTING = "reconnecting"
     RECONNECT_FAILED = "reconnect_failed"
 
+    CONFIG_REPLAY_FAILED = "config_replay_failed"
+    """链路连上了，但重连后的配置重放失败，本层已把这条连接断开。
+
+    与 :attr:`RECONNECT_FAILED` 的差别是**调用方的处置**：那条说「还没连上，
+    等着」，这条说「连是连上了，可设备停在它自己的上电状态上——别用这批数据」。
+    它不是终态：本层随后按既有退避继续重试，重试耗尽时照常发
+    :attr:`RECONNECT_FAILED`。
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class ConnectionEvent:
@@ -115,6 +124,12 @@ class DeviceStats:
     resync_count: int = 0
     dropped_bytes: int = 0
     reconnects: int = 0
+    """**完整恢复**的重连次数：连上且配置重放成功才计入。
+
+    重放失败的那次不算——它以断开收场（见
+    :attr:`ConnectionState.CONFIG_REPLAY_FAILED`）。把它算成一次成功重连，
+    统计就会和事件流互相矛盾，而这两样常常是排查现场唯一剩下的东西。
+    """
 
 
 class WT901Device:
@@ -151,6 +166,7 @@ class WT901Device:
         )
         self._seq = 0
         self._closing = False
+        self._intentional_disconnect = False
         self._reconnect_task: asyncio.Task[None] | None = None
 
         self._frames = 0
@@ -348,6 +364,11 @@ class WT901Device:
         BLE 断连不保证模块保留运行时状态，重连后必须重新下发已知配置。具体配置
         能力属寄存器事务层（RAY-171）；本层只保证在连接恢复后、样本恢复流动前
         调用这个钩子。
+
+        钩子抛出的异常**不会**逃出重连循环：本层记一条日志、发
+        :attr:`ConnectionState.CONFIG_REPLAY_FAILED`、断开链路，并把这次重连
+        整体算作失败重来。所以钩子失败时只管抛，不必自己重试——重试用的是与
+        连接同一套退避策略。
         """
         self._reconnect_hook = hook
 
@@ -406,7 +427,7 @@ class WT901Device:
 
     def _handle_disconnect(self) -> None:
         """传输层报告对端断开。"""
-        if self._closing:
+        if self._closing or self._intentional_disconnect:
             return
         self._emit_event(ConnectionEvent(ConnectionState.DISCONNECTED, self.device_id))
         if self._auto_reconnect and self._reconnect_task is None:
@@ -455,11 +476,37 @@ class WT901Device:
                 # seq 归零，配合 ConnectionEvent 让上层不会把跨连接样本当成
                 # 一条连续序列。
                 self._seq = 0
-                self._reconnects += 1
 
                 if self._reconnect_hook is not None:
-                    await self._reconnect_hook()
+                    try:
+                        await self._reconnect_hook()
+                    except Exception as exc:
+                        # 钩子失败最容易发生在链路刚恢复、还没稳住的那一刻。
+                        # 就这么连着比断开更危险：数据照流、没有一处报错，而
+                        # 设备停在出厂默认值上（10 Hz），应用以为是它配的那个
+                        # 速率。断开让这次重连整体算失败，交回同一套退避重试。
+                        # 捕获 Exception 而不是 TransportError：钩子是调用方
+                        # 能替换的，它抛什么都不该只剩 asyncio 在 GC 时打的那
+                        # 行日志。
+                        _LOGGER.warning(
+                            "重连第 %d 次：配置重放失败，断开链路重来：%s",
+                            attempt,
+                            exc,
+                            exc_info=True,
+                        )
+                        self._emit_event(
+                            ConnectionEvent(
+                                ConnectionState.CONFIG_REPLAY_FAILED,
+                                self.device_id,
+                                attempt=attempt,
+                                error=str(exc),
+                            )
+                        )
+                        await self._drop_connection()
+                        continue
 
+                # 连上**且**配置已恢复，这次重连才算数。
+                self._reconnects += 1
                 self._emit_event(
                     ConnectionEvent(
                         ConnectionState.CONNECTED, self.device_id, attempt=attempt
@@ -468,6 +515,24 @@ class WT901Device:
                 return
         finally:
             self._reconnect_task = None
+
+    async def _drop_connection(self) -> None:
+        """配置重放失败后主动断开，且不把它记成一次新的断连。
+
+        调用方从没收到过这条连接的 ``CONNECTED``——它在重放失败时就被判废了，
+        再发一条 ``DISCONNECTED`` 只会让「一直是断开的」这件事看起来发生了两次。
+        真实 BLE 后端会在这里回调 ``on_disconnect``，内存传输不会；压住它顺带
+        让事件序列不随传输实现而变。
+        """
+        self._intentional_disconnect = True
+        try:
+            await self._transport.disconnect()
+        except Exception as exc:  # 已经在失败路径上，断不掉也要接着重试
+            _LOGGER.warning(
+                "配置重放失败后断开链路也失败了：%s", exc, exc_info=True
+            )
+        finally:
+            self._intentional_disconnect = False
 
     def __repr__(self) -> str:
         return (

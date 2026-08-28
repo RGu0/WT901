@@ -13,7 +13,11 @@ import pytest
 
 from conftest import register_frame, registers
 from wt901.device import WT901Device
-from wt901.errors import TransportTimeoutError, UnsupportedRegisterError
+from wt901.errors import (
+    ConnectionLostError,
+    TransportTimeoutError,
+    UnsupportedRegisterError,
+)
 from wt901.protocol.frames import HEADER, FrameFlag
 from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 from wt901.transport.memory import MemoryTransport
@@ -275,6 +279,61 @@ async def test_applied_writes_are_remembered_once_per_register() -> None:
     assert len(applied) == 1
     assert applied[0].register == Register.RRATE
     assert applied[0].value == ReturnRate.HZ_50
+    await device.close()
+
+
+async def test_failed_replay_disconnects_instead_of_running_misconfigured() -> None:
+    """重放失败时留着连接，等于全程跑在出厂 10 Hz 上而没有一处报错。
+
+    链路刚恢复正是最容易再抖一下的时刻，而重放的第一条就是解锁指令。
+    """
+    from wt901.device import ConnectionState, ReconnectPolicy
+
+    class FlakyOnReconnect(MemoryTransport):
+        """重连之后的第一次写就失败，之后恢复正常。"""
+
+        def __init__(self) -> None:
+            super().__init__("dev")
+            self.fail_next_write = False
+
+        async def connect(self) -> None:
+            await super().connect()
+            if self.connect_calls == 2:  # 第一次重连
+                self.fail_next_write = True
+
+        async def write(self, data: bytes) -> None:
+            if self.fail_next_write:
+                self.fail_next_write = False
+                raise ConnectionLostError("重连后链路又掉了")
+            await super().write(data)
+
+    transport = FlakyOnReconnect()
+    device = WT901Device(
+        transport,
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(initial_delay=0.01, max_delay=0.01),
+    )
+    device.registers.write_delay = 0.0
+    device.registers.save_delay = 0.0
+    await device.open()
+
+    await device.registers.set_output_rate(ReturnRate.HZ_50)
+    transport.writes.clear()
+
+    transport.drop()
+    await asyncio.sleep(0.08)
+
+    states = [
+        event.state
+        for event in [device._events.get_nowait() for _ in range(device._events.qsize())]
+        if event is not None
+    ]
+    assert ConnectionState.CONFIG_REPLAY_FAILED in states
+    assert states[-1] is ConnectionState.CONNECTED
+
+    # 第一次尝试写不出去，第二次把配置补上了——设备不会停在 10 Hz 上。
+    assert transport.writes == [UNLOCK, bytes.fromhex("ffaa030800")]
+    assert device.stats.reconnects == 1
     await device.close()
 
 

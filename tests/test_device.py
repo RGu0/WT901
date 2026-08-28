@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
 
 import pytest
@@ -331,6 +332,117 @@ async def test_close_cancels_pending_reconnect() -> None:
     await device.close()
     await asyncio.sleep(0.02)
     assert not device.is_connected
+
+
+# ----- 重连：配置重放失败 --------------------------------------------------
+
+
+def _drained_events(device: WT901Device) -> list[ConnectionEvent]:
+    """把已入队的事件全部取出来。
+
+    ``events()`` 要等到下一个事件才会返回，断言「到此为止的完整序列」用它会挂住。
+    """
+    events: list[ConnectionEvent] = []
+    while not device._events.empty():
+        event = device._events.get_nowait()
+        if event is not None:
+            events.append(event)
+    return events
+
+
+async def test_config_replay_failure_disconnects_and_retries() -> None:
+    """连着但配置没恢复比断开更危险：数据照流、没有一处报错。"""
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(initial_delay=0.01, max_delay=0.01),
+    )
+    calls = 0
+
+    async def hook() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionLostError("重连后链路又掉了")
+
+    device.on_reconnect(hook)
+    transport.drop()
+    await asyncio.sleep(0.08)
+
+    assert calls == 2
+    assert transport.connect_calls == 3  # open + 两次重连尝试
+    assert transport.disconnect_calls == 1  # 重放失败的那条连接被主动断掉
+    assert device.is_connected
+    # 失败那次不计入：统计说成功而事件说没成功，正是这个 bug 的样子。
+    assert device.stats.reconnects == 1
+
+    events = _drained_events(device)
+    assert [e.state for e in events] == [
+        ConnectionState.CONNECTED,
+        ConnectionState.DISCONNECTED,
+        ConnectionState.RECONNECTING,
+        ConnectionState.CONFIG_REPLAY_FAILED,
+        ConnectionState.RECONNECTING,
+        ConnectionState.CONNECTED,
+    ]
+    failure = events[3]
+    assert failure.attempt == 1
+    assert failure.error == "重连后链路又掉了"
+    await device.close()
+
+
+async def test_config_replay_failure_does_not_escape_the_task() -> None:
+    """此前异常直接冲出 _reconnect_loop，只剩 asyncio 在 GC 时打的一行日志。"""
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(
+            initial_delay=0.01, max_delay=0.01, max_attempts=2
+        ),
+    )
+
+    async def hook() -> None:
+        raise ConnectionLostError("重连后链路又掉了")
+
+    device.on_reconnect(hook)
+    transport.drop()
+    await asyncio.sleep(0)  # 让重连任务建起来
+    task = device._reconnect_task
+    assert task is not None
+
+    await asyncio.sleep(0.1)
+    assert task.done()
+    assert task.exception() is None
+    assert not device.is_connected  # 没留下一条配置未恢复的连接
+    assert device.stats.reconnects == 0
+
+    states = [event.state for event in _drained_events(device)]
+    assert states.count(ConnectionState.CONFIG_REPLAY_FAILED) == 2
+    assert states[-1] is ConnectionState.RECONNECT_FAILED
+    await device.close()
+
+
+async def test_config_replay_failure_is_logged_by_this_library(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """asyncio 那条 GC 期日志不算痕迹：调用方没配 logging 就完全看不到。"""
+    device, transport = await _opened(
+        auto_reconnect=True,
+        reconnect_policy=ReconnectPolicy(
+            initial_delay=0.01, max_delay=0.01, max_attempts=1
+        ),
+    )
+
+    async def hook() -> None:
+        raise ConnectionLostError("重连后链路又掉了")
+
+    device.on_reconnect(hook)
+    with caplog.at_level(logging.WARNING, logger="wt901.device"):
+        transport.drop()
+        await asyncio.sleep(0.08)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("配置重放失败" in message for message in messages)
+    assert any("重连后链路又掉了" in message for message in messages)
+    await device.close()
 
 
 # ----- 位移模式 ------------------------------------------------------------
