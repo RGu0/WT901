@@ -125,7 +125,7 @@ def _coerce_mounting(value: Mounting | int) -> Mounting:
 
 
 def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
-    """把取值收敛到上游表列出的七档（``0x00``–``0x06``），其余一律拒绝。
+    """把取值收敛到协议文档列出的七档（``0x00``–``0x06``），其余一律拒绝。
 
     措辞与 :func:`_coerce_return_rate` 的「未核实」**有意不同**：速率的每一档都在
     真机上量过，带宽一档都没有（见 :class:`Bandwidth`）。这里拒绝的理由因此只有
@@ -133,16 +133,20 @@ def _coerce_bandwidth(value: Bandwidth | int) -> Bandwidth:
     为「数据不对但连接正常」。
 
     七档齐备之后这条理由**没有变弱**，只是白名单的边界从「本库登记过的」挪到了
-    「上游表列出的」：``0x02`` 打成 ``0x20`` 照样被挡下。但白名单仍然不是背书——
-    放行一个编码只表示上游表列出了它，不表示那个赫兹数被核实过。
+    「协议文档列出的」：``0x02`` 打成 ``0x20`` 照样被挡下。但白名单仍然不是背书——
+    放行一个编码只表示协议文档列出了它，不表示那个赫兹数被核实过。
+
+    出处措辞在 ``RAY-308`` 上调过一次：此前写的是「上游表」并特指维特通用编码表，
+    而这七个数其实印在本型号自己的协议文档里。**证据强度上调，但拒绝的理由一个字
+    没变**——白名单防的是误写，与那些赫兹数对不对无关。
     """
     try:
         return Bandwidth(value)
     except ValueError:
         raise UnsupportedRegisterError(
-            f"带宽编码 0x{int(value):02X} 不在上游表列出的 0x00-0x06 内。"
+            f"带宽编码 0x{int(value):02X} 不在协议文档列出的 0x00-0x06 内。"
             f"已登记：{', '.join(f'{b.name}=0x{b.value:02X}' for b in Bandwidth)}"
-            "（标称值来自维特通用编码表，本库一档都未实测，见 Bandwidth 文档）。"
+            "（标称值载于本型号官方协议文档，本库一档都未实测，见 Bandwidth 文档）。"
         ) from None
 
 

@@ -17,8 +17,8 @@ import inspect
 import pathlib
 import textwrap
 
-from wt901.protocol import registers
-from wt901.protocol.registers import Register
+from wt901.protocol import registers, units
+from wt901.protocol.registers import Bandwidth, Register, ReturnRate
 
 _PROTOCOL_DOC = (
     pathlib.Path(__file__).resolve().parent.parent / "docs" / "protocol.md"
@@ -154,3 +154,80 @@ def test_protocol_doc_keeps_the_zero_serial_observation_but_not_its_old_explanat
     text = _PROTOCOL_DOC.read_text(encoding="utf-8")
     assert "序列号寄存器可能全为 0" in text
     assert "成因尚未确定" in text
+
+
+# ===== RAY-308 scope 1：出处标错与官方矛盾 ===================================
+#
+# 与上面 RAY-309 那组守的是同一件事的另一半：RAY-309 修的是「把没核实的说成核实
+# 了」，这里修的是反过来——**把有官方文档背书的说成只有通用表背书**，然后据此给
+# 结论打了不该打的折扣。两个方向的错都会让读者对证据强度做出错误判断。
+
+
+def test_bandwidth_provenance_was_raised_to_the_model_protocol_doc() -> None:
+    """七个标称值印在本型号协议文档里，不是只见于维特跨型号的通用编码表。
+
+    **上调的是出处，不是证据强度。** 「一档都没实测过」必须原样留着——出处更硬不
+    等于数字被量过，这两件事分开算，混起来正是 RAY-298 当初要修的毛病。
+    """
+    doc = Bandwidth.__doc__ or ""
+    assert "本型号官方协议文档" in doc
+    assert "一档都没实测过" in doc
+    # 协议文档那段原文（含默认值）要在文中，否则「出处上调」只是一句无从复核的断言。
+    assert "0x00:256Hz" in doc
+    assert "0x0004" in doc
+
+
+def test_bandwidth_docstring_drops_the_broken_analogy() -> None:
+    """「同一张通用表在速率上被证伪过，所以带宽也可疑」这个类比不成立。
+
+    协议文档的速率表根本没有 ``0x0A``，被证伪的是通用表；而带宽七档出自协议文档。
+    类比拆掉之后**残留风险不许跟着消失**——所以这里同时要求文中写明那三条新理由
+    里最硬的一条：唯一一次尝试测量的结果（10.9 Hz）与文档标称（20 Hz）对不上。
+    """
+    doc = Bandwidth.__doc__ or ""
+    assert "那个类比不成立" in doc
+    assert "10.9" in doc
+
+
+def test_bandwidth_register_records_the_factory_default_and_the_mismatch() -> None:
+    """官方默认 ``0x0004``，而 ``ray-298`` 那台设备读回 ``0x03``。
+
+    这条对照的价值不在默认值本身，在它推出来的那句话：**那台设备被改过，不是出厂
+    态**。「读回什么就是出厂什么」这个假设在本器件上已经被证否一次，任何依赖出厂
+    默认的推断都要先确认设备没被动过。
+    """
+    doc = _REGISTER_DOCS["BANDWIDTH"]
+    assert "0x0004" in doc
+    assert "不是出厂态" in doc
+
+
+def test_return_rate_says_the_official_table_has_no_0x0a() -> None:
+    """排除 ``0x0A`` 的理由从「实测对不上标称」变成两条，前一条更硬。
+
+    ``0x0A`` 仍然不在枚举里——**结论没变，变的是它站在什么上面**。
+    """
+    doc = ReturnRate.__doc__ or ""
+    assert "根本没有 ``0x0A`` 这个编码" in doc
+    assert "通用编码表" in doc  # 得说清 125 Hz 那个数从哪来，否则读者无从判断
+    assert 0x0A not in {int(rate) for rate in ReturnRate}
+
+
+def test_magnetic_unit_docstring_records_all_three_conflicting_sources() -> None:
+    """三份上游资料对磁场量纲的说法互相矛盾，此前只记了两份。
+
+    第三份（协议文档说原始值就是 mG，与 ``0x72`` 无关）**出处比 SDK 更硬**，所以
+    不能像此前那样用「Python 示例陈旧」一句带过。
+    """
+    doc = units.magnetic_field_to_ut.__doc__ or ""
+    assert "mG" in doc            # 协议文档那一份
+    assert "0.15" in doc          # C#/Android SDK 分档
+    assert "120" in doc           # Python 示例
+    # 不许在实现里选边站：必须写明这是暂定、要单独立项以实测定论。
+    assert "暂定" in doc
+    assert "实测定论" in doc
+
+
+def test_protocol_doc_records_the_three_way_magnetic_conflict() -> None:
+    text = _PROTOCOL_DOC.read_text(encoding="utf-8")
+    assert "三份上游资料对磁场量纲的说法互相矛盾" in text
+    assert "不做取舍" in text
