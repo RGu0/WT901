@@ -787,6 +787,79 @@ C# 实现开后台线程持续补充非默认量：每轮读磁场 `0x3A` 与四
 
 ⚠ 实测的是**本库的默认配置**；官方 SDK 每轮都读，远比这激进，不能据此推断其代价。
 
+### 8.1 连接期 RSSI：官方每 5 轮读一次，本库补齐（RAY-310）
+
+上面那段漏了 SDK 读数据线程里的一项。`Bwt901bleProcessor.java`：
+
+```java
+// 读取信号
+if (count % 5 == 0) {
+    deviceModel.setDeviceData(WitSensorKey.Rssi,
+        WitBluetoothManager.getRssi(bluetoothBLEOption.getMac()) + "");
+}
+```
+
+`WitSensorKey.Rssi` 与 `AccX` / `T` / `Q0` 在 SDK 里是同一等级的对外数据键——它把
+信号强度当作设备数据的一部分。本库此前只有**扫描期**的 RSSI（来自广播包），连上
+之后这个量就没了。
+
+**它与本库其它链路指标不是同一类。** `resync_count`、`dropped_samples`、
+`out_of_order` 全是**结果**——链路已经出问题之后才动。RSSI 是**原因**侧的量，也是
+唯一一个能在丢包发生之前给出预警的。两台设备同采时，只有它能区分「这台链路差」
+与「主机侧带宽不够」。所以它应当**与结果侧指标配合读**，而不是替代它们。
+
+#### ⚠ 只有 macOS 拿得到，而且不在 bleak 的公开契约上
+
+这是 `bleak 0.22.3`（`uv.lock` 钉住的版本）的事实，不是保守说法：
+
+| 后端 | 有 `get_rssi()` |
+|---|---|
+| corebluetooth | **有**（`bleak/backends/corebluetooth/client.py`） |
+| bluezdbus | 没有 |
+| winrt | 没有 |
+| p4android | 没有 |
+
+而且 `BleakClient` 的公开门面**没有**这个方法，也没有 `__getattr__` 转发；
+`BaseBleakClient` 也没有声明它。也就是说这个能力**不在 bleak 的任何公开契约上**，
+要用只能穿过 `client._backend` 这个私有属性。本库这么做了，并且**取不到就退化成
+`None`**——bleak 改了私有结构，本方法变成「这个平台没有 RSSI」，而不是抛异常打断
+调用方的轮询任务。
+
+Linux 与 Windows 上 `read_rssi()` 恒为 `None`。这是如实报告，不是本库偷懒。
+
+#### ⚠ bleak 的 RSSI 读不能并发，而且没有超时
+
+`bleak/backends/corebluetooth/PeripheralDelegate.py`：
+
+```python
+async def read_rssi(self) -> NSNumber:
+    future = self._event_loop.create_future()
+    self._read_rssi_futures[self.peripheral.identifier()] = future
+    try:
+        self.peripheral.readRSSI()
+        return await future
+    finally:
+        del self._read_rssi_futures[self.peripheral.identifier()]
+```
+
+**每个外设只有一个 future 槽。** 同一台设备上并发调两次：第二次覆盖第一次的
+future，第一次那个 `await` 永远等不到结果；随后 `finally` 里的 `del` 还会给第二次
+抛 `KeyError`。这与 §10 记录的并发寄存器读挂起（RAY-177）是**同一类失败**，只是
+发生在 bleak 里而不是本库里。那个 `await` 也没有任何超时。
+
+所以本库自带一把锁与一个超时（`DEFAULT_RSSI_TIMEOUT = 2.0 s`），两者都不是可选的。
+
+#### 不与寄存器事务抢链路
+
+`readRSSI()` 走链路层，用的是独立的 future 字典，与特征值读写各走各的，**不占用
+`0x61`/`0x71` 通道的带宽**。这一条是读 bleak 源码得到的，不是实测。
+
+#### 本机是否真能读到，尚未实测
+
+上面全部由读源码与运行时反射确认，离线可复现。**唯一没有实测的是**：macOS 对
+已连接外设调 `readRSSI()` 是否真的返回值。判据已在 `tools/probe_rssi.py` 的模块
+docstring 里预注册，需在已授权蓝牙的终端执行。
+
 ## 9. 上游资料缺陷清单
 
 一处汇总，实现时不得照抄：

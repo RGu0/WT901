@@ -28,6 +28,34 @@
   不上），这条与消费速度无关（流还没开始）。两者都不为零时先看这条——它意味着
   链路刚建立或刚恢复，那段数据本来就不该按当前配置去理解（RAY-311）。
 
+* **连接期的链路信号强度。** `await device.read_rssi()`、
+  `await device.telemetry.read_rssi()`，以及 `TelemetryPoller.rssi`
+  （由 `PollerConfig.rssi` 控制，默认每 5 秒一次）。单位 dBm。
+
+  本库此前只有**扫描期**的 RSSI（`DiscoveredDevice.rssi`，来自广播包），连上之后
+  这个量就没了。而它与 `resync_count`、`dropped_samples` 不是同一类：那些是
+  **结果**——链路已经出问题之后才动；RSSI 是**原因**侧的，是唯一一个能在丢包发生
+  之前给出预警的量。两台设备同采时，只有它能区分「这台链路差」与「主机侧带宽
+  不够」（RAY-310）。
+
+  **只有 macOS 拿得到。** `bleak 0.22.3` 的 `BleakClient` 公开门面没有
+  `get_rssi()`，`BaseBleakClient` 也没声明它，只有 CoreBluetooth 后端的实现类上
+  有；BlueZ / WinRT / p4android 都没有。Linux 与 Windows 上恒为 `None`。**拿不到
+  时是 `None`，永远不是 0**——0 dBm 是极强信号。
+
+  `Transport.read_rssi()` 是基类上的**非抽象**方法，默认返回 `None`，所以自定义
+  传输不实现它也不会坏掉。它约定**不抛异常**：超时、后端不支持、链路已断，全部
+  落成 `None`——它的调用方是不该被单次读失败终止的轮询任务。
+
+  新增 `BleTransport(rssi_timeout=...)` 与 `DEFAULT_RSSI_TIMEOUT`（2.0 s）。超时
+  与内部串行化都不是可选的：bleak 的 `read_rssi()` 每个外设只有一个 future 槽，
+  并发两次会让第一次**永久挂起**（与 RAY-177 同一类失败，只是发生在 bleak 里），
+  而那个 `await` 自己没有任何超时。
+
+  **尚未在真机上确认 macOS 是否真能读到已连接外设的 RSSI**：上述全部由读 bleak
+  源码与运行时反射得到。判据已预注册在 `tools/probe_rssi.py`，需在已授权蓝牙的
+  终端执行。
+
 ### 修复
 
 * **连接就绪之前到达的实时数据帧此前照常变成样本交付。**

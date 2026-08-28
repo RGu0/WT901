@@ -458,6 +458,24 @@ class WT901Device:
         async with self.registers.exclusive():
             await self.write(payload)
 
+    async def read_rssi(self) -> int | None:
+        """连接期的链路信号强度（dBm），取不到时 ``None``。
+
+        与 :class:`DeviceStats` 里那几个计数**不是同一类量**，别放在一起读：
+        那些是**结果**——链路已经出问题之后才动；RSSI 是**原因**侧的量，是唯一
+        一个能在丢包发生之前给出预警的。一次采集中途 ``resync_count`` 开始涨，
+        配上 RSSI 曲线才分得清「设备走远了」和「主机侧带宽不够」；两台设备同采
+        时更是只有它能区分「这台链路差」和「主机扛不住」。
+
+        取不到时是 ``None``，不是 0——0 dBm 是极强信号。取不到的原因见
+        :meth:`~wt901.transport.ble.BleTransport.read_rssi`：**只有 macOS 有**，
+        且不在 bleak 的公开契约上。
+
+        本方法不抛异常（:meth:`~wt901.transport.base.Transport.read_rssi` 的约定）。
+        周期性取值用 :class:`~wt901.telemetry.TelemetryPoller`，它带节流。
+        """
+        return await self._transport.read_rssi()
+
     # ----- 内部 -----------------------------------------------------------
 
     def _handle_bytes(self, data: bytes) -> None:

@@ -30,6 +30,7 @@ from wt901.transport.base import Transport
 
 __all__ = [
     "DEFAULT_CONNECT_TIMEOUT",
+    "DEFAULT_RSSI_TIMEOUT",
     "DEFAULT_WRITE_TIMEOUT",
     "NOTIFY_CHARACTERISTIC_UUID",
     "SERVICE_UUID",
@@ -49,6 +50,14 @@ DEFAULT_WRITE_TIMEOUT = 5.0
 
 存在的意义不是催促慢链路，而是把「永远不返回」变成「失败」——真机上并发写同一
 特征时，bleak 的 CoreBluetooth 后端会让其中一条永久挂起，且不在任何超时之内。
+"""
+
+DEFAULT_RSSI_TIMEOUT = 2.0
+"""秒。读 RSSI 是一次链路层往返，正常在百毫秒内完成。
+
+理由与 :data:`DEFAULT_WRITE_TIMEOUT` 相同，而且这里的「永远不返回」是**读源码
+可见的**：bleak 0.22.3 的 ``PeripheralDelegate.read_rssi()`` 建一个 future 交给
+CoreBluetooth，自己不设任何超时；系统不回调，它就一直等。
 """
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,8 +144,10 @@ class BleTransport(Transport):
         "_client_factory",
         "_handle",
         "_notify_characteristic",
+        "_rssi_lock",
         "_timeout",
         "_write_characteristic",
+        "rssi_timeout",
         "write_timeout",
     )
 
@@ -147,6 +158,7 @@ class BleTransport(Transport):
         timeout: float = DEFAULT_CONNECT_TIMEOUT,
         client_factory: ClientFactory = _default_client_factory,
         write_timeout: float = DEFAULT_WRITE_TIMEOUT,
+        rssi_timeout: float = DEFAULT_RSSI_TIMEOUT,
     ) -> None:
         """``target`` 可以是 :class:`~wt901.discovery.DiscoveredDevice` 或地址字符串。
 
@@ -162,6 +174,8 @@ class BleTransport(Transport):
         self._address, self._handle = _resolve_target(target)
         self._timeout = timeout
         self.write_timeout = write_timeout
+        self.rssi_timeout = rssi_timeout
+        self._rssi_lock = asyncio.Lock()
         self._client_factory = client_factory
         self._client: BleakClientLike | None = None
         self._notify_characteristic: Any = None
@@ -253,6 +267,66 @@ class BleTransport(Transport):
             ) from exc
         except Exception as exc:
             raise TransportError(f"写入失败：{exc}") from exc
+
+    async def read_rssi(self) -> int | None:
+        """连接期的链路信号强度（dBm），拿不到时 ``None``。
+
+        **只有 macOS 拿得到，而且用的是 bleak 的私有属性。** 这不是保守的说法，
+        是 bleak 0.22.3 的事实：
+
+        * ``BleakClient`` 的公开门面**没有** ``get_rssi()``，也没有
+          ``__getattr__`` 转发；``BaseBleakClient`` 也没有声明它。也就是说这个
+          能力**不在 bleak 的任何公开契约上**。
+        * 它只实现在 CoreBluetooth 后端的客户端类上
+          （``bleak/backends/corebluetooth/client.py``）。BlueZ、WinRT、
+          p4android 三个后端都没有。
+
+        所以这里穿过 ``client._backend`` 去取，并且**取不到就返回 ``None``**：
+        bleak 哪天改了私有结构，本方法退化成「这个平台没有 RSSI」，而不是抛异常
+        把调用方的轮询任务打断。Linux 与 Windows 上它恒为 ``None``——这是如实
+        报告，不是本库偷懒。
+
+        **两道防护，都不是可选的**（`bleak/backends/corebluetooth/PeripheralDelegate.py`）：
+
+        1. **串行化。** ``read_rssi()`` 用一个「每外设一个 future」的字典
+           （``_read_rssi_futures[peripheral.identifier()]``）。同一台设备上并发
+           调两次，第二次会**覆盖**第一次的 future，第一次那个 ``await`` 于是
+           永远等不到结果；随后 ``finally`` 里的 ``del`` 还会给第二次抛
+           ``KeyError``。这与 RAY-177 是同一类失败，只是发生在 bleak 里。所以
+           这里自己加锁。
+        2. **超时。** 那个 ``await`` 没有任何超时。见
+           :data:`DEFAULT_RSSI_TIMEOUT`。
+
+        读 RSSI **不与寄存器事务抢链路**：它走 ``peripheral.readRSSI()`` 和一个
+        独立的 future 字典，与特征值读写各走各的，不占用 ``0x61``/``0x71`` 通道
+        的带宽。
+        """
+        client = self._client
+        if client is None or not client.is_connected:
+            return None
+        # bleak 的私有属性。用 getattr 而不是直接取：这是一条明知在契约之外的
+        # 路径，它消失时应当退化，不应当抛。
+        backend = getattr(client, "_backend", None)
+        get_rssi = getattr(backend, "get_rssi", None)
+        if get_rssi is None:
+            _LOGGER.debug(
+                "当前 bleak 后端没有 get_rssi()，连接期信号强度不可得（只有 "
+                "CoreBluetooth 后端实现了它）"
+            )
+            return None
+        async with self._rssi_lock:
+            try:
+                return int(await asyncio.wait_for(get_rssi(), self.rssi_timeout))
+            except TimeoutError:
+                _LOGGER.debug("读 RSSI 超时（%ss）", self.rssi_timeout)
+                return None
+            except Exception as exc:
+                # 捕获 Exception：这条路径穿过 bleak 的私有实现再穿到
+                # CoreBluetooth，抛什么完全不受本库约束，而它的调用方是一个不该
+                # 被单次读失败终止的轮询任务。exc_info 照 device.py 里两处同类
+                # 兜底的做法带上——吞掉异常的地方，堆栈是唯一剩下的线索。
+                _LOGGER.debug("读 RSSI 失败：%s", exc, exc_info=True)
+                return None
 
     def _handle_notification(self, _sender: Any, data: bytearray) -> None:
         self._emit_data(bytes(data))
