@@ -72,9 +72,10 @@ def set_return_rate(rate: ReturnRate) -> bytes:
 
 
 def set_bandwidth(bandwidth: Bandwidth) -> bytes:
-    """设置抗混叠带宽。取值被限定在已登记的档位，见 :class:`Bandwidth`。
+    """设置抗混叠带宽。取值被限定在上游表列出的档位，见 :class:`Bandwidth`。
 
-    「已登记」不等于「已核实」：三档的标称频率本库都没实测过，见 :class:`Bandwidth`。
+    「已登记」不等于「已核实」：这些标称频率本库一档都没实测过，登记它们是转述上游
+    表，不是背书那个赫兹数。见 :class:`Bandwidth`。
     """
     return write_register(Register.BANDWIDTH, bandwidth)
 

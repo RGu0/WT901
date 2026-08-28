@@ -223,8 +223,13 @@ async def test_unverified_output_rate_is_refused(code: int) -> None:
     await device.close()
 
 
-@pytest.mark.parametrize("code", [0x01, 0x02, 0x06, 0xFF])
-async def test_unverified_bandwidth_is_refused(code: int) -> None:
+@pytest.mark.parametrize("code", [0x07, 0x20, 0xFF])
+async def test_bandwidth_outside_the_upstream_table_is_refused(code: int) -> None:
+    """上游表只列到 `0x06`，再往上一律拒绝。
+
+    RAY-304 把白名单的边界从「本库登记过的三档」挪到了「上游表列出的七档」，但
+    边界本身仍在：`0x20` 就是 `0x02` 多打了一个零，这正是这道防线要挡的东西。
+    """
     device, transport = await _opened()
     with pytest.raises(UnsupportedRegisterError):
         await device.registers.set_bandwidth(code)

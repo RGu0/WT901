@@ -51,9 +51,13 @@ def test_the_rung_is_registered_at_0x03() -> None:
     assert Bandwidth.HZ_42 == 0x03
 
 
-def test_all_three_rungs_are_distinct_codes() -> None:
-    """三档必须是三个不同编码——IntEnum 会把重复值悄悄变成别名。"""
-    assert len({int(b) for b in Bandwidth}) == 3
+def test_all_rungs_are_distinct_codes() -> None:
+    """每档必须是不同编码——IntEnum 会把重复值悄悄变成别名。
+
+    RAY-304 把档位从三档扩到七档后这条更要紧：七个成员里只要有两个写了同一个值，
+    后写的那个就变成别名，`Bandwidth` 会安静地少一档而没有任何报错。
+    """
+    assert len({int(b) for b in Bandwidth}) == 7
 
 
 async def test_set_bandwidth_emits_the_adaptation_document_bytes() -> None:
@@ -90,12 +94,16 @@ async def test_bandwidth_is_remembered_for_replay() -> None:
 # ----- 验收标准 1、3：防线不因证据强度而松动 --------------------------------
 
 
-@pytest.mark.parametrize("code", [0x01, 0x02, 0x05, 0x06, 0xFF])
-async def test_unregistered_codes_are_still_refused(code: int) -> None:
-    """`0x01`/`0x02`/`0x05`/`0x06` 在通用编码表里各有含义，本库仍不放行。
+@pytest.mark.parametrize("code", [0x07, 0x20, 0xFF])
+async def test_codes_outside_the_upstream_table_are_still_refused(code: int) -> None:
+    """上游表列到 `0x06` 为止，`0x07` 起一律不放行。
 
-    拒绝防的是**误**写，与「被放行的那三档证据有多强」无关——所以这道防线不随
-    RAY-298 的结论松动。断言 `writes == []`：拒绝必须发生在发出任何字节之前。
+    这条原本钉的是 `0x01`/`0x02`/`0x05`/`0x06` 也被拒——RAY-304 把它们登记了，
+    理由见 `Bandwidth` 文档：登记一个编码是转述上游表，不是背书那个赫兹数。
+
+    **防线本身没有松动**，只是边界从「本库登记过的」挪到了「上游表列出的」：拒绝
+    防的仍是**误**写（`0x20` 就是 `0x02` 多打一个零），与证据强度无关。断言
+    `writes == []`：拒绝必须发生在发出任何字节之前。
     """
     device, transport = await _opened()
     with pytest.raises(UnsupportedRegisterError):
