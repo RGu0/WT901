@@ -3,7 +3,7 @@
 手动执行，不进 CI。**必须在已授权蓝牙的终端里跑**——代理的 Bash 工具下
 CoreBluetooth 不授权，脚本会在扫描那一步就失败。
 
-    ./dev run python tools/probe_rssi.py [秒数]
+    ./dev run python tools/probe_rssi.py [秒数] [--address <地址>]
 
 默认量 60 秒，每秒一次。
 
@@ -39,23 +39,102 @@ import statistics
 import sys
 
 from wt901.device import WT901Device
-from wt901.discovery import scan
+from wt901.discovery import DiscoveredDevice, scan
+from wt901.errors import TransportError
 from wt901.protocol.registers import ReturnRate
 
 DEFAULT_SECONDS = 60
 
+SCAN_TIMEOUT = 15.0
+"""秒。与 ``tools/`` 里其它探测脚本一致。默认的 5 秒在设备刚上电或信号偏弱时
+常常扫不到，而扫不到与连不上的表现完全不同，不该被一个太短的超时混在一起。"""
 
-async def main(seconds: int) -> int:
-    devices = await scan()
+_CONNECT_HELP = """
+连不上时按这个顺序查：
+
+  1. 设备是不是已经被别的东西连着？维特上位机、另一个还在跑的脚本、或者上一次
+     没退干净的进程都会占着它。BLE 外设同一时刻只接受一个中心设备。
+  2. 设备离主机多远？上面列出的 rssi 低于约 -85 dBm 时连接常常超时。
+  3. 设备电量是不是快没了？低电时广播还在、连接会失败。
+  4. 都不是的话跑 tools/smoke_ble.py —— 它不按名字过滤，能分开「设备不在范围」
+     与「蓝牙本身没工作」。
+"""
+
+
+def take_address(argv: list[str]) -> tuple[str | None, list[str]]:
+    """从参数里取出 ``--address <地址>``，返回 ``(地址, 其余参数)``。"""
+    if "--address" not in argv:
+        return None, argv
+    index = argv.index("--address")
+    if index + 1 >= len(argv):
+        raise SystemExit("--address 后面要跟一个地址")
+    return argv[index + 1], argv[:index] + argv[index + 2 :]
+
+
+async def pick_device(address: str | None) -> DiscoveredDevice | None:
+    """扫描并选一台设备，**把扫到的都打印出来**。
+
+    连接失败时最要紧的信息是「扫到了什么、信号多强」。
+    """
+    devices = await scan(SCAN_TIMEOUT)
     if not devices:
-        print("没有扫描到设备。检查设备是否上电、是否已被别的程序连着。")
-        return 1
+        print(f"扫描 {SCAN_TIMEOUT:.0f} s 没有发现 WT 设备。")
+        print(_CONNECT_HELP)
+        return None
 
-    target = devices[0]
-    print(f"目标：{target.address}  扫描期 RSSI={target.rssi} dBm")
+    print(f"扫描到 {len(devices)} 台 WT 设备：")
+    for item in devices:
+        print(f"  {item.address}  rssi={item.rssi}  name={item.name!r}")
+
+    if address is not None:
+        for item in devices:
+            if item.address == address:
+                print(f"\n按 --address 选中 {address}\n")
+                return item
+        print(f"\n扫到的设备里没有 {address}。")
+        return None
+
+    # 取信号最强的那台，不是列表里的第一台：台架上那台几乎总是最近的一台，
+    # 而扫描结果的顺序不保证任何东西。
+    chosen = max(devices, key=lambda d: d.rssi if d.rssi is not None else -999)
+    print(f"\n选中信号最强的：{chosen.address}（rssi={chosen.rssi}）")
+    if len(devices) > 1:
+        print("要指定别的设备：--address <地址>")
+    print()
+    return chosen
+
+
+async def connect_probe(address: str | None) -> tuple[WT901Device, int | None] | None:
+    """连接，失败时重新扫描再试一次。返回 ``(设备, 扫描期 rssi)``。
+
+    macOS 上扫描得到的句柄是 CoreBluetooth 的会话内标识，可能在两次扫描之间失效；
+    重新扫描拿一个新句柄比拿旧的重试有意义。
+    """
+    for attempt in (1, 2):
+        target = await pick_device(address)
+        if target is None:
+            return None
+        try:
+            return await WT901Device.connect(target), target.rssi
+        except TransportError as exc:
+            print(f"\n第 {attempt} 次连接失败：{exc}")
+            if attempt == 2:
+                print(_CONNECT_HELP)
+                return None
+            print("重新扫描后再试一次（macOS 上句柄可能已失效）…\n")
+    return None
+
+
+async def main(seconds: int, address: str | None) -> int:
+    connected = await connect_probe(address)
+    if connected is None:
+        return 1
+    device_handle, scan_rssi = connected
+
+    print(f"扫描期 RSSI={scan_rssi} dBm")
     print("（扫描期那个值来自广播包，与下面连接期的读取不是同一条路径。）\n")
 
-    async with await WT901Device.connect(target) as device:
+    async with device_handle as device:
         await device.registers.set_output_rate(ReturnRate.HZ_100)
 
         stop = asyncio.Event()
@@ -106,5 +185,6 @@ async def main(seconds: int) -> int:
 
 
 if __name__ == "__main__":
-    seconds = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SECONDS
-    raise SystemExit(asyncio.run(main(seconds)))
+    chosen_address, rest = take_address(sys.argv[1:])
+    seconds = int(rest[0]) if rest else DEFAULT_SECONDS
+    raise SystemExit(asyncio.run(main(seconds, chosen_address)))
