@@ -216,9 +216,10 @@ async def test_set_output_rate_and_bandwidth() -> None:
 async def test_unverified_output_rate_is_refused(code: int) -> None:
     """未核实的档位必须拒绝，而不是静默写入一个未知编码。
 
-    `0x0A` 特别值得留在这里：通用编码表标它 125 Hz，2026-08-18 实测却是 99.29 Hz
-    （与 `0x09` 几乎相同，且同批探测中 `0x0B` 达到 198 Hz，排除链路带宽不足）。
-    实测与标称不符的档位一律拒绝。
+    `0x0A` 特别值得留在这里：**本型号协议文档的速率表压根没有这个编码**（RAY-308），
+    「125 Hz」是维特跨型号通用编码表的说法；2026-08-18 实测 99.29 Hz（与 `0x09` 几乎
+    相同，且同批探测中 `0x0B` 达到 198 Hz，排除链路带宽不足），两边互相印证。
+    本型号没定义的、以及实测与标称不符的档位，一律拒绝。
     """
     device, transport = await _opened()
     with pytest.raises(UnsupportedRegisterError, match="未在真机上核实"):
