@@ -10,13 +10,11 @@ from __future__ import annotations
 import asyncio
 import struct
 
-import pytest
-
 from conftest import register_frame, registers
 from wt901.device import ConnectionState, ReconnectPolicy, WT901Device
 from wt901.errors import ConnectionLostError
 from wt901.protocol.frames import HEADER, FrameFlag, RegisterResponse
-from wt901.protocol.registers import Register
+from wt901.protocol.registers import Register, ReturnRate
 from wt901.transport.memory import MemoryTransport
 
 MOTIONLESS = (0, 0, 2048, 0, 0, 0, 0, 0, 0)
@@ -68,8 +66,10 @@ async def test_frames_during_config_replay_are_dropped_and_counted() -> None:
     transport.drop()
     await asyncio.sleep(0.06)
 
-    assert device.stats.dropped_before_ready == 5
+    # 行为断言放在最前：把 device.py 退回修复前跑这个文件，第一个挂掉的应该是
+    # 「样本被交付了」，而不是「统计字段不存在」——后者只证明字段新加过。
     assert _queued_samples(device) == []
+    assert device.stats.dropped_before_ready == 5
     # 帧确实到了，帧计数照记——被丢的是样本，不是「什么都没发生」。
     assert device.stats.frames == 5
     # 背压计数不受污染：没有任何消费者跟不上。
@@ -169,8 +169,6 @@ async def test_default_config_replay_survives_the_window() -> None:
     ``replay()`` 靠 ``0x71`` 回帧确认写入是否落地。若门控误伤寄存器通道，重放
     会超时失败，这条测试会看到 CONFIG_REPLAY_FAILED 而不是 CONNECTED。
     """
-    from wt901.protocol.registers import ReturnRate
-
     device, transport = await _reconnecting_device()
     await device.registers.set_output_rate(ReturnRate.HZ_50)
     assert len(device.registers.applied_writes) == 1
@@ -269,13 +267,22 @@ async def test_dropped_before_ready_is_separate_from_dropped_samples() -> None:
 
 def test_stats_field_is_documented() -> None:
     """新增的公开字段必须自带说明，且明写与 dropped_samples 的区别。"""
+    field_doc = _field_doc("dropped_before_ready")
+    assert "dropped_samples" in field_doc
+    assert "丢弃" in field_doc
+
+
+def test_stats_class_doc_lists_the_third_entry() -> None:
+    """类 docstring 曾写「判断数据可不可信的两个入口」——现在是三个。
+
+    钉住这句：漏更新它，读的人就会照着一份少一项的清单去排查。
+    """
     from wt901.device import DeviceStats
 
-    doc = DeviceStats.__dict__["__doc__"]
+    doc = DeviceStats.__doc__
     assert doc is not None
-    source_doc = _field_doc("dropped_before_ready")
-    assert "dropped_samples" in source_doc
-    assert "丢弃" in source_doc
+    assert "dropped_before_ready" in doc
+    assert "两个入口" not in doc
 
 
 def _field_doc(name: str) -> str:
@@ -311,8 +318,7 @@ def _field_doc(name: str) -> str:
     raise AssertionError(f"DeviceStats.{name} 没有字面量 docstring")
 
 
-@pytest.mark.parametrize("attribute", ["dropped_before_ready"])
-def test_stats_exposes_new_field(attribute: str) -> None:
+def test_stats_exposes_new_field() -> None:
     from wt901.device import DeviceStats
 
-    assert hasattr(DeviceStats(), attribute)
+    assert DeviceStats().dropped_before_ready == 0
