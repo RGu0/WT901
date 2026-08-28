@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import struct
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -303,6 +304,76 @@ async def test_a_recovering_source_that_is_late_still_counts_as_out_of_order(
     assert late.t_host == 1.0
     assert stream.stats.out_of_order == 1
     await iterator.aclose()
+    await left.close()
+    await right.close()
+
+
+async def test_out_of_order_counts_every_sample_below_the_high_water_mark(
+    clock: Clock,
+) -> None:
+    """判别性用例：一串**连续**迟到的样本，每一个都要计一次。
+
+    上面三条断言 ``out_of_order`` 的用例都只有一个迟到样本，「相邻逆序」与
+    「低于已发出的最大 ``t_host``」两种定义在那里都等于 1，区分不了。这条把真实
+    的抖动形状搬进来——一条流卡住几个采样周期，再把攒下的一次吐出——两种定义在
+    这里差三倍，于是语义被钉死：改成相邻比较的实现会在这里红。
+
+    定义本身在测试里现算，不写死成 3：读的人能看到两个数确实不同，而不是只看到
+    一个凭空的常数。
+    """
+    (left, left_t), (right, right_t) = await _pair()
+
+    # 右腿正常跑三个样本；左腿一言不发，超时后被移出等待集。
+    for index in range(3):
+        clock.now = index * 0.01
+        right_t.feed(data_frame())
+
+    stream = merge([left, right], max_latency=0.01)
+    iterator = stream.samples()
+    emitted = [
+        await asyncio.wait_for(anext(iterator), timeout=2.0) for _ in range(3)
+    ]
+
+    # 左腿攒下的三个一次吐出：彼此升序，但每一个都早于已发出的最大 t_host。
+    for now in (0.005, 0.006, 0.007):
+        clock.now = now
+        left_t.feed(data_frame())
+    emitted += [
+        await asyncio.wait_for(anext(iterator), timeout=2.0) for _ in range(3)
+    ]
+
+    times = [sample.t_host for sample in emitted]
+    assert times == [0.0, 0.01, 0.02, 0.005, 0.006, 0.007]
+
+    adjacent_inversions = sum(1 for a, b in pairwise(times) if b < a)
+    below_high_water = sum(
+        1 for index, t in enumerate(times) if index and t < max(times[:index])
+    )
+    assert (adjacent_inversions, below_high_water) == (1, 3)
+
+    assert stream.stats.out_of_order == below_high_water
+    assert stream.stats.out_of_order != adjacent_inversions
+    await iterator.aclose()
+    await left.close()
+    await right.close()
+
+
+async def test_a_zero_latency_budget_waits_for_nothing(clock: Clock) -> None:
+    """``max_latency=0`` 是合法的，含义是「一个样本都不等」。
+
+    构造函数只拒绝负数，所以 ``0`` 会被接受；它实际上等于不归并。钉住这条是因为
+    文档现在明写了这个含义，而「想要等齐请传 ``None``」这句提醒只有在 ``0`` 真的
+    不等的前提下才成立。
+    """
+    (left, _left_t), (right, right_t) = await _pair()
+    clock.now = 1.0
+    right_t.feed(data_frame())
+
+    stream = merge([left, right], max_latency=0)
+    samples = await asyncio.wait_for(_drain(stream, 1), timeout=2.0)
+
+    assert [sample.device_id for sample in samples] == ["right-shank"]
+    assert stream.stats.emitted_while_stalled == 1   # 这个样本没有等齐过任何人
     await left.close()
     await right.close()
 
