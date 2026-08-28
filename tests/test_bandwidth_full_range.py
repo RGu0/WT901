@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
 
+import wt901
 from wt901.device import WT901Device
 from wt901.errors import UnsupportedRegisterError
 from wt901.protocol.registers import Bandwidth
@@ -153,3 +155,31 @@ async def test_refusal_message_lists_the_rungs_without_endorsing_them() -> None:
     # 触发拒绝的那个编码要出现在信息里，否则日志里看不出是什么值被挡了。
     assert re.search(r"0x07", message, re.IGNORECASE)
     await device.close()
+
+
+def test_no_source_file_still_says_the_nominal_values_are_three() -> None:
+    """全包扫一遍：不许再有地方把「标称值」的数量说成三档。
+
+    这条是补漏加的。RAY-304 改 `Bandwidth` 时漏了两处转述它的文档——
+    `protocol/registers.py` 的模块开头与 `protocol/commands.py` 的 `set_bandwidth`——
+    两处都还写着「三档的标称频率」。类型检查和单元测试都不看文档，只有人看得见，
+    而人恰恰是这些句子唯一的读者。
+
+    **不禁止「三档」本身**：RAY-298 的取证确实只覆盖 `0x00`/`0x03`/`0x04` 三档，
+    描述那次证据时说三档是对的。禁的是把整个枚举的标称值说成三档这一类断言，所以
+    只钉住那几个完整短语，扫的是整个包而不是某个文件——下次新增的文件也在网里。
+
+    「只登记已核实的两档」也不在禁列：`Bandwidth` 的文档要引用它才说得清那段强调
+    是冲着什么来的。它归 `test_docstring_does_not_claim_any_rung_was_measured` 管，
+    那条钉住它只以引文形式出现一次。
+    """
+    package = pathlib.Path(wt901.__file__).parent
+    forbidden = ("三档的标称频率", "三档的标称值", "三个标称值")
+
+    offences = [
+        f"{path.relative_to(package)}: {phrase}"
+        for path in sorted(package.rglob("*.py"))
+        for phrase in forbidden
+        if phrase in path.read_text(encoding="utf-8")
+    ]
+    assert offences == []
