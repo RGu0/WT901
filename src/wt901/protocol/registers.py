@@ -29,9 +29,11 @@ from __future__ import annotations
 from enum import IntEnum
 
 __all__ = [
+    "BLUETOOTH_NAME_PREFIX",
     "MAC_START",
     "MAC_WORDS",
     "MAG_START",
+    "MAX_BLUETOOTH_NAME_SUFFIX_BYTES",
     "QUATERNION_START",
     "REGISTERS_PER_RESPONSE",
     "SERIAL_NUMBER_START",
@@ -43,6 +45,7 @@ __all__ = [
     "Mounting",
     "Register",
     "ReturnRate",
+    "SaveAction",
 ]
 
 
@@ -242,11 +245,26 @@ class Mounting(IntEnum):
     """
 
     VERTICAL = 1
-    """垂直安装。"""
+    """垂直安装。⚠ **官方硬约束：必须让坐标轴的 Y 轴箭头朝上。**
+
+    协议文档的「设置安装方向」小节原文是 ``1(0x01): 垂直安装（必须坐标轴的 Y 轴箭头
+    朝上）``，本库此前只抄了「垂直安装」四个字，把括号里那句丢了。
+
+    **装成垂直但 Y 轴没朝上，设备不会报错。** 链路、速率、丢包这些可观测量全部正常，
+    只有姿态解算的基准是错的，数据会一直偏——与写反 :attr:`Register.MOUNTING` 本身
+    是同一类故障：在数据里看不出来。
+
+    本库**无法替调用方检查**这一条：设备只知道自己被告知装成了垂直，不知道箭头朝哪。
+    唯一的防线是把约束写在这里，让写 ``Mounting.VERTICAL`` 的人看见它。
+    """
 
 
 class CalibrationMode(IntEnum):
-    """写入 :attr:`Register.CALSW` 的校准模式。"""
+    """写入 :attr:`Register.CALSW` 的校准模式。
+
+    ⚠ :attr:`ZERO_Z_AXIS` 与 :attr:`ANGLE_REFERENCE` 本库**没有在真机上验证过**：
+    字节构造照协议文档写死并有离线测试，但设备收到之后的行为没有实测数据。
+    """
 
     NORMAL = 0x0000
     """退出校准，恢复正常输出。也用于结束磁场校准。"""
@@ -254,8 +272,92 @@ class CalibrationMode(IntEnum):
     ACCELERATION = 0x0001
     """加计校准，要求设备水平静置。"""
 
+    ZERO_Z_AXIS = 0x0004
+    """把当前朝向定为 Z 轴（航向角）零位。
+
+    ⚠ **需先切到 6 轴算法才生效**（:attr:`AlgorithmMode.SIX_AXIS`）。协议文档原文：
+    「发送这个指令前需要先切换六轴算法，才可以生效。」
+
+    9 轴模式下发它**不报错也不生效**——航向由磁力计给出绝对参考，没有「归零」可言。
+    本库的 :meth:`~wt901.calibration.Calibration.zero_z_axis` 因此会先读回 ``0x24``
+    确认，宁可多一次往返也不让一条静默失效的指令过去。
+
+    本库此前只在 :attr:`Register.ALGORITHM` 的文档里提过这条门控关系，却没有对应
+    入口——知道有这回事，却用不了。
+    """
+
     MAGNETIC_FIELD = 0x0007
     """开始磁场校准，需绕 XYZ 三轴各转一圈后写回 :attr:`NORMAL`。"""
+
+    ANGLE_REFERENCE = 0x0008
+    """设置角度参考：把当前姿态定为三轴角度的零位。
+
+    协议文档注明**发送后需要再发保存指令**，本库的写事务本来就以保存收尾
+    （:meth:`~wt901.config.RegisterAccess.write` 的 ``persist=True``），所以这一条
+    自动满足。
+
+    与 :attr:`ACCELERATION` 的区别：加计校准标定的是**传感器零位**（要求设备水平
+    静置，标定的是重力方向）；这一条标定的是**姿态参考**，把当前姿态当作零点，
+    与设备是不是水平无关。
+    """
+
+
+class SaveAction(IntEnum):
+    """写入 :attr:`Register.SAVE` 的取值。协议文档：``FF AA 00 SAVE 00``。
+
+    本库此前只用过 :attr:`SAVE_CURRENT`，另外两个官方取值没有入口——而它们做的是
+    与「保存」**完全不同**的事：一个抹掉全部配置，一个断链重启。用裸数字写
+    ``0x00`` 时这三件事长得一模一样，所以要求具名。
+
+    ⚠ **:attr:`RESTORE_DEFAULTS` 与 :attr:`REBOOT` 本库都没有在真机上验证过。**
+    它们的字节构造照协议文档写死并有离线测试，但「设备收到之后到底做了什么」没有
+    实测数据。
+    """
+
+    SAVE_CURRENT = 0x0000
+    """保存当前配置到 flash。掉电后仍生效。
+
+    这是写寄存器事务的第三步（解锁 → 写 → 保存），本库一直在用的就是它。
+    """
+
+    RESTORE_DEFAULTS = 0x0001
+    """**恢复默认配置并保存。** 抹掉设备 flash 里的全部配置，包括别人写进去的。
+
+    这不是「撤销我这次的改动」，是把设备整个打回出厂态——回传速率会回到 10 Hz，
+    带宽回到 ``0x04``，安装方向、算法一并复位。
+
+    它正是 ``ray-298`` 那台设备暴露的问题的解药：那台设备连上时 flash 里存着
+    ``BANDWIDTH=0x03``，与官方默认 ``0x0004`` 对不上，**说明它被改过**
+    （见 :attr:`Register.BANDWIDTH`）。没有这个入口时，想拿到一台状态确定的设备
+    只能逐个寄存器写一遍，而本库根本不知道「全部」是哪些。
+    """
+
+    REBOOT = 0x00FF
+    """**重启设备。** 不是保存，也不是复位配置。
+
+    改蓝牙名称之后必须重启才生效（见
+    :meth:`~wt901.device.WT901Device.set_bluetooth_name`），这是它最直接的用处。
+
+    ⚠ **重启会断开 BLE 链路**——设备重启期间不可能维持连接。调用方要么开着自动重连
+    等它回来，要么自己重新连。
+    """
+
+
+BLUETOOTH_NAME_PREFIX = "WT"
+"""蓝牙名称必须以它开头。
+
+协议文档说得很直白：这两个字符「不可修改，否则会导致 APP 搜索不到」——维特的 APP
+靠前缀筛选设备。本库的 :func:`~wt901.discovery.scan` 不依赖这个前缀，但**改名是
+不可逆的**（改完只能靠新名字或 MAC 找回设备），所以本库照官方的约束挡住不合规的名字。
+"""
+
+MAX_BLUETOOTH_NAME_SUFFIX_BYTES = 14
+"""``BLUETOOTH_NAME_PREFIX`` 之后可改部分的字节上限。
+
+这个数**能被帧长佐证**：整条指令是 ``WT``（协议头）+ 蓝牙名称 + ``\r\n``，而蓝牙
+名称本身是 ``WT`` + 可改部分。2 + 2 + 14 + 2 = **20 字节，正好是 BLE 单次上传上限**
+（§2）。协议文档给的 14 与帧长算出来的 14 对得上，不是抄错的数。
+"""
 
 
 class ReturnRate(IntEnum):

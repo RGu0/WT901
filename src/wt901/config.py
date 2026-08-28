@@ -26,6 +26,7 @@ from wt901.protocol.registers import (
     Mounting,
     Register,
     ReturnRate,
+    SaveAction,
 )
 
 if TYPE_CHECKING:
@@ -363,6 +364,61 @@ class RegisterAccess:
         resolved = _coerce_mounting(mounting)
         await self.write(Register.MOUNTING, resolved)
         return resolved
+
+    # ----- 设备级动作（不是配置） -----------------------------------------
+
+    async def _send_save_action(self, action: SaveAction) -> None:
+        """按官方指令流程发一条 ``0x00`` 指令：解锁 → 延时 → 写。
+
+        **末尾不再补一次保存**——``0x00`` 本身就是保存指令。若照 :meth:`write` 的
+        三步走，:attr:`SaveAction.RESTORE_DEFAULTS` 之后会立刻跟一条
+        ``FF AA 00 00 00``，把刚刚复位掉的配置又存回去一次；:attr:`SaveAction.REBOOT`
+        之后那一条则会打在一台正在重启的设备上。这就是为什么这两个动作不能走
+        :meth:`write`，而不是「顺手复用一下」。
+
+        走同一把事务锁：这三条指令与寄存器读写抢的是同一条 GATT 特征。
+        """
+        async with self._transaction_lock:
+            await self._device.write(commands.unlock())
+            await asyncio.sleep(self.write_delay)
+            await self._device.write(commands.save(action))
+
+    async def restore_defaults(self) -> None:
+        """**把设备打回出厂配置并保存**（``FF AA 00 01 00``）。
+
+        这不是「撤销我这次的改动」，是抹掉设备 flash 里的**全部**配置——包括别的
+        软件写进去的。回传速率会回到 10 Hz，带宽回到 ``0x04``，安装方向与算法一并
+        复位。
+
+        **它同时清空本对象的 ``applied_writes``。** 不清的话，下一次自动重连会把
+        刚刚被抹掉的配置重新放回去——调用方看到的是「复位了，过一会儿又变回来了」，
+        而且没有任何报错。既然设备已回出厂态，「我配置过的样子」这份记录就不再对应
+        任何真实状态，留着它只会说谎。
+
+        **复位后设备不再是你配置的样子**，需要重新走一遍配置流程。
+
+        ⚠ **本库没有在真机上验证过这条指令。** 字节构造照协议文档写死并有离线测试，
+        但设备收到之后到底做了什么没有实测数据（``ray-308``）。
+        """
+        await self._send_save_action(SaveAction.RESTORE_DEFAULTS)
+        self._applied.clear()
+
+    async def reboot(self) -> None:
+        """**重启设备**（``FF AA 00 FF 00``）。
+
+        改完蓝牙名称之后必须重启才生效，见
+        :meth:`~wt901.device.WT901Device.set_bluetooth_name`。
+
+        ⚠ **会断开 BLE 链路。** 设备重启期间不可能维持连接，所以本方法**发出即返回**，
+        不等待、也无从确认设备是否真的重启了——重启成功与链路断开在观测上是同一件事。
+        开着自动重连就会在设备回来后自动接上；否则调用方要自己重连。
+
+        ``applied_writes`` **有意不清空**：重启不改变 flash 里的配置，重连后重放仍然
+        是对的。这与 :meth:`restore_defaults` 的区别正是「设备还是不是我配置的样子」。
+
+        ⚠ **本库没有在真机上验证过这条指令。**
+        """
+        await self._send_save_action(SaveAction.REBOOT)
 
     async def read_output_rate(self) -> int:
         """读回 ``RRATE`` 的原始编码。
