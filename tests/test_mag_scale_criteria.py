@@ -23,8 +23,10 @@ from tools.probe_mag_scale import (
     ACCEPT_TOLERANCE,
     DOC_COEFFICIENT,
     MEAN_DIRECTION_LIMIT,
+    MIN_OCTANTS,
     PYTHON_COEFFICIENT,
     REJECT_TOLERANCE,
+    RESIDUAL_LIMIT,
     _separability,
     coverage,
     fit_sphere,
@@ -114,6 +116,30 @@ def test_full_sphere_coverage_passes() -> None:
     assert mean_direction <= MEAN_DIRECTION_LIMIT
 
 
+def test_planar_rotation_is_caught() -> None:
+    """最现实的失败模式：把设备平放在桌上原地转一圈。
+
+    点云共面时法方程接近奇异但**不精确奇异**——浮点噪声让它照样解得出一个数，
+    `fit_sphere` 挡不住。挡住它的只有覆盖度。这条比只扫半球那条更重要，因为
+    「平放着转一圈」正是不看说明的人最可能做的动作。
+    """
+    rng = random.Random(11)
+    center = (50.0, -30.0, 200.0)
+    points = [
+        (
+            center[0] + 300.0 * math.cos(angle) + rng.gauss(0, 1.0),
+            center[1] + 300.0 * math.sin(angle) + rng.gauss(0, 1.0),
+            center[2] + rng.gauss(0, 1.0),
+        )
+        for angle in [rng.uniform(0, 2 * math.pi) for _ in range(400)]
+    ]
+    fitted = fit_sphere(points)
+    # 拟合本身多半仍会给出一个数——这正是问题所在。
+    if fitted is not None:
+        occupied, _ = coverage(points, fitted[0])
+        assert occupied < MIN_OCTANTS, "共面点云必须被卦限占用度挡下"
+
+
 def test_hemisphere_sweep_is_caught() -> None:
     """只扫半个球面时，拟合仍会收敛——覆盖度是唯一能挡住它的那道闸。"""
     center = (10.0, 10.0, 10.0)
@@ -190,9 +216,19 @@ def test_verdict_refuses_the_grey_zone() -> None:
 
 
 def test_thresholds_are_the_pre_registered_ones() -> None:
-    """门槛值本身钉住。事后调门槛等于没有预注册（RAY-298 的教训）。"""
+    """门槛值本身钉住。事后调门槛等于没有预注册（RAY-298 的教训）。
+
+    **五个门槛一个都不能漏。** 只钉判定门槛而放过拟合质量门槛，等于留了一条后门：
+    数据不干净时把 RMS 上限从 8% 松到 15%，判定门槛再严也没用。
+    """
+    # 判定
     assert ACCEPT_TOLERANCE == 0.15
     assert REJECT_TOLERANCE == 0.30
+    # 拟合质量
+    assert RESIDUAL_LIMIT == 0.08
+    assert MIN_OCTANTS == 6
+    assert MEAN_DIRECTION_LIMIT == 0.35
+    # 候选系数
     assert DOC_COEFFICIENT == 0.1
     assert PYTHON_COEFFICIENT == pytest.approx(1 / 120)
 
