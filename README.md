@@ -17,7 +17,7 @@
 dependencies = ["wt901"]
 
 [tool.uv.sources]
-wt901 = { git = "https://github.com/RGu0/WT901.git", tag = "v0.2.0" }
+wt901 = { git = "https://github.com/RGu0/WT901.git", tag = "v0.3.0" }
 ```
 
 两段分开写是有理由的：`dependencies` 里只放普通包名，来源交给 `[tool.uv.sources]`。
@@ -27,7 +27,7 @@ wheel 的人就得到一个改不掉的 git URL，不少索引还直接拒收。
 不用 uv 时才退回 direct reference，且**只适合装成应用、不再被别人依赖的项目**：
 
 ```bash
-pip install "wt901 @ git+https://github.com/RGu0/WT901.git@v0.2.0"
+pip install "wt901 @ git+https://github.com/RGu0/WT901.git@v0.3.0"
 ```
 
 每个 tag 对应 [CHANGELOG](CHANGELOG.md) 里的一节，升级前先读那一节的「升级须知」。
