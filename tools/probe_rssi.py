@@ -30,11 +30,25 @@ CoreBluetooth 不授权，脚本会在扫描那一步就失败。
 跑的时候拿着设备走远再走回来。若 RSSI 先降后升、而 `resync_count` 在 RSSI 最低
 的那段开始涨，那就是这个量存在的意义的直接证据。这一步是可选的，不影响上面
 三条判据。
+
+## 取证结果（2026-09-01）—— 上面的判据一个字未改
+
+**判据 1 成立。** 一台 WT901BLE67（`26F34505`…），60 次读取 **60 次成功**，
+全距 −71..−33 dBm、中位 −51 dBm，两个条件都满足。采集内信号有约 38 dB 的摆动且
+逐秒跟随，说明返回的是活值而不是缓存。
+
+**那个可选的「原因侧」对照没拿到**：同一次采集里 `resync_count` 与
+`dropped_samples` 全程为 0，没有 resync 事件可与 RSSI 曲线对照。所以本次实测
+**没有**验证「RSSI 能在丢包之前预警」——那仍是立项时的论证。
+
+结论与局限记在 `docs/protocol.md` §8.1，证据在
+`ray-310/rssi-platform-verdict/acceptance/`。
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import statistics
 import sys
 
@@ -44,6 +58,20 @@ from wt901.errors import TransportError
 from wt901.protocol.registers import ReturnRate
 
 DEFAULT_SECONDS = 60
+
+CRITERION_1_RATIO = 55 / 60
+"""判据 1 的成功率门槛，预注册的原文是「60 次里 ≥ 55 次」，按比例推广到其它 N。
+
+此前这里写的是 ``0.9``，N=60 时取整得 **54** —— 比预注册的 55 松一次。差一次只在
+边界上出现，但一出现就是脚本打印的判读与预注册判据相反，而判据是不得事后调整的。
+"""
+
+CRITERION_1_RANGE = (-100, 0)
+"""判据 1 的第二个条件。它与次数门槛是**并列**的，缺一不可。
+
+此前判定只看次数，把这个条件单独打了一行就算完 —— 那样读到越界值时仍会打印
+「判据 1 成立」。
+"""
 
 SCAN_TIMEOUT = 15.0
 """秒。与 ``tools/`` 里其它探测脚本一致。默认的 5 秒在设备刚上电或信号偏弱时
@@ -59,6 +87,44 @@ _CONNECT_HELP = """
   4. 都不是的话跑 tools/smoke_ble.py —— 它不按名字过滤，能分开「设备不在范围」
      与「蓝牙本身没工作」。
 """
+
+
+def threshold(reads: int) -> int:
+    """判据 1 的次数门槛。预注册原文是「60 次里 ≥ 55 次」，按比例取上整。"""
+    return math.ceil(reads * CRITERION_1_RATIO)
+
+
+def in_range(got: list[int]) -> bool:
+    """判据 1 的第二个条件：拿到的值全部落在 −100..0 dBm。"""
+    low, high = CRITERION_1_RANGE
+    return bool(got) and all(low <= value <= high for value in got)
+
+
+def judge(readings: list[int | None]) -> str:
+    """按预注册判据判读一次采集。``None`` 表示那一次没读到。
+
+    判读单独成函数，是为了让它**可测**。RAY-304 的教训是一道预注册门槛从来没被
+    评估过、而那种漏检不会在任何一次运行里报错；判读埋在 ``main()`` 里跟着一次真机
+    采集才跑得到，等于没有守卫。
+    """
+    got = [value for value in readings if value is not None]
+    if not got:
+        return "判据 2：完全读不到。本库报 None 是正确行为，按判据 2 落文档。"
+    if len(got) >= threshold(len(readings)):
+        if in_range(got):
+            return "判据 1：能稳定读到。按判据 1 落文档。"
+        # 判据 1 的两个条件缺一不可。次数够了却有值越界，不落进三条判据里的任何
+        # 一条 —— 那是读到的数本身可疑，不是「时好时坏」。不判读。
+        low, high = CRITERION_1_RANGE
+        return (
+            f"不判读：成功 {len(got)} 次已过门槛，但有值落在 {low}..{high} dBm 之外。"
+            "判据 1 的两个条件缺一不可，而越界值说明读到的数本身可疑"
+            "（判据 3 说的是「读不到」，不是「读到了但不可信」）。重跑。"
+        )
+    return (
+        "判据 3：时好时坏。这一条要写进 docstring —— 调用方拿到的 None "
+        "有时只是「这次没读到」，不能当成链路断了。"
+    )
 
 
 def take_address(argv: list[str]) -> tuple[str | None, list[str]]:
@@ -166,21 +232,13 @@ async def main(seconds: int, address: str | None) -> int:
     print("\n--- 判读 ---")
     print(f"读取次数        {len(readings)}")
     print(f"拿到值的次数    {len(got)}")
+    low, high = CRITERION_1_RANGE
     if got:
         print(f"中位数          {statistics.median(got)} dBm")
         print(f"全距            {min(got)} .. {max(got)} dBm")
-        in_range = all(-100 <= value <= 0 for value in got)
-        print(f"全部落在 -100..0 dBm：{in_range}")
-
-    if len(got) == 0:
-        print("\n判据 2：完全读不到。本库报 None 是正确行为，按判据 2 落文档。")
-    elif len(got) >= int(len(readings) * 0.9):
-        print("\n判据 1：能稳定读到。按判据 1 落文档。")
-    else:
-        print(
-            "\n判据 3：时好时坏。这一条要写进 docstring —— 调用方拿到的 None "
-            "有时只是「这次没读到」，不能当成链路断了。"
-        )
+        print(f"全部落在 {low}..{high} dBm：{in_range(got)}")
+    print(f"判据 1 的次数门槛 {threshold(len(readings))} / {len(readings)}")
+    print("\n" + judge(readings))
     return 0
 
 
