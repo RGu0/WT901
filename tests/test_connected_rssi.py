@@ -385,3 +385,89 @@ def test_probe_take_address() -> None:
 
     assert take_address(["60", "--address", "ABC"]) == ("ABC", ["60"])
     assert take_address(["60"]) == (None, ["60"])
+
+
+# ---------------------------------------------------------------------------
+# RAY-310 scope 2 `rssi-platform-verdict` 的真机取证（2026-09-01）。
+#
+# 数值逐条抄自
+# ``ray-310/rssi-platform-verdict/acceptance/probe_rssi-console-2026-09-01.txt``。
+# 钉住它的理由与 RAY-304 那次相同：**已经付过代价的真机数据不该被改动后的判读再误
+# 判一次**。判据本身预注册于取证之前（脚本模块 docstring 与 RAY-310 的 Linear
+# 评论），这些测试守的是判据，不是实现。
+# ---------------------------------------------------------------------------
+
+_HARDWARE_2026_09_01 = (
+    -47, -47, -47, -47, -46, -45, -45, -45, -45, -45,
+    -45, -45, -46, -45, -45, -45, -45, -45, -45, -46,
+    -46, -45, -46, -45, -45, -48, -52, -54, -54, -60,
+    -57, -54, -57, -59, -63, -66, -66, -67, -62, -65,
+    -70, -71, -62, -63, -63, -61, -58, -62, -63, -67,
+    -67, -69, -65, -61, -56, -56, -50, -43, -40, -33,
+)
+
+
+def test_probe_criterion_1_thresholds_match_the_preregistration() -> None:
+    """预注册原文：「60 次里 ≥ 55 次成功、值落在 −100..0 dBm」。
+
+    此前次数门槛写的是 ``int(N * 0.9)``，N=60 时得 **54** —— 比预注册松一次。差一次
+    只在边界上出现，但一出现就是打印的判读与预注册判据相反。
+    """
+    import tools.probe_rssi as probe
+
+    assert probe.threshold(60) == 55
+    assert probe.CRITERION_1_RANGE == (-100, 0)
+
+
+def test_probe_judges_the_2026_09_01_hardware_run_as_criterion_1() -> None:
+    """那一轮 60 次全部读到、全距 −71..−33 dBm，两个条件都满足。"""
+    import tools.probe_rssi as probe
+
+    readings = list(_HARDWARE_2026_09_01)
+    assert len(readings) == 60
+    assert len([v for v in readings if v is not None]) == 60
+    assert min(readings) == -71 and max(readings) == -33
+    assert probe.judge(readings).startswith("判据 1")
+
+
+def test_probe_does_not_call_54_of_60_criterion_1() -> None:
+    """54/60 恰好是旧门槛放行、预注册判据不放行的那一点。"""
+    import tools.probe_rssi as probe
+
+    readings: list[int | None] = [-50] * 54 + [None] * 6
+    assert len([v for v in readings if v is not None]) == 54
+    assert probe.judge(readings).startswith("判据 3")
+    assert probe.judge([-50] * 55 + [None] * 5).startswith("判据 1")
+
+
+def test_probe_out_of_range_value_blocks_criterion_1() -> None:
+    """判据 1 的两个条件缺一不可。
+
+    此前判定只看次数，第二个条件只被单独打印一行 —— 读到越界值时仍会打印
+    「判据 1 成立」。越界不属于判据 3：判据 3 说的是「读不到」，不是「读到了但不
+    可信」。
+    """
+    import tools.probe_rssi as probe
+
+    verdict = probe.judge([-50] * 59 + [7])
+    assert verdict.startswith("不判读")
+    assert not verdict.startswith("判据")
+
+
+def test_probe_all_none_is_criterion_2() -> None:
+    import tools.probe_rssi as probe
+
+    assert probe.judge([None] * 60).startswith("判据 2")
+
+
+def test_probe_no_readings_is_not_criterion_2() -> None:
+    """零次采集不是「完全读不到」。
+
+    判据 2 的处置是去 §8.1 与 README 里写「macOS 上连接期 RSSI 读不到」。若空采集
+    也判成判据 2，``probe_rssi.py 0`` 就能凭零份数据得出那个结论。
+    """
+    import tools.probe_rssi as probe
+
+    verdict = probe.judge([])
+    assert verdict.startswith("没有采集")
+    assert not verdict.startswith("判据")
