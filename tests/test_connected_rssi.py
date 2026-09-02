@@ -458,3 +458,16 @@ def test_probe_all_none_is_criterion_2() -> None:
     import tools.probe_rssi as probe
 
     assert probe.judge([None] * 60).startswith("判据 2")
+
+
+def test_probe_no_readings_is_not_criterion_2() -> None:
+    """零次采集不是「完全读不到」。
+
+    判据 2 的处置是去 §8.1 与 README 里写「macOS 上连接期 RSSI 读不到」。若空采集
+    也判成判据 2，``probe_rssi.py 0`` 就能凭零份数据得出那个结论。
+    """
+    import tools.probe_rssi as probe
+
+    verdict = probe.judge([])
+    assert verdict.startswith("没有采集")
+    assert not verdict.startswith("判据")

@@ -107,6 +107,11 @@ def judge(readings: list[int | None]) -> str:
     评估过、而那种漏检不会在任何一次运行里报错；判读埋在 ``main()`` 里跟着一次真机
     采集才跑得到，等于没有守卫。
     """
+    if not readings:
+        # 「一次都没采到」与「采了但一次都没读到」是两回事。前者什么也不说明，
+        # 后者是判据 2 —— 而判据 2 会让人去 §8.1 与 README 里写「本平台读不到」。
+        # 不区分的话，``probe_rssi.py 0`` 就能凭零份数据得出那个结论。
+        return "没有采集：一次读取都没发生，不构成任何一条判据。"
     got = [value for value in readings if value is not None]
     if not got:
         return "判据 2：完全读不到。本库报 None 是正确行为，按判据 2 落文档。"
