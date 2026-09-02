@@ -246,13 +246,46 @@ def test_default_read_retries_now_has_a_documented_basis() -> None:
                 assert isinstance(value, str)
                 doc = value
     assert doc is not None, "DEFAULT_READ_RETRIES 必须有字面量 docstring"
-    assert "未实测" in doc
     assert "RAY-313" in doc
     assert "probe_read_retries" in doc
 
+    # scope 1 时这里钉的是「未实测」。scope 2 取证之后那句话不再成立，**但这条守卫
+    # 不能就此删掉**：它守的从来不是那三个字，而是「这个公开可调参数必须如实交代
+    # 自己的依据」。取证之后要交代的东西反而更多，所以钉得更紧。
+    assert "已实测" in doc
+    assert "测不出" in doc
+
+    # 最要紧的一句。零失败很容易被下一个改这段的人写成「实测支持 2」或「实测表明
+    # 不需要重试」——两句话这批数据都支持不了。
+    assert "不是「不存在」" in doc
+
+
+def test_default_read_retries_docstring_does_not_overclaim() -> None:
+    """docstring 不得声称实测**支持**这个取值，或**否证**了早期不可靠。
+
+    实测结论是「测不出」：既没给出改动它的依据，也没证明官方 SDK 那 5 秒是多余的。
+    这条钉住的是措辞的方向——一个只差几个字的改写就能把「约束了效应大小」变成
+    「否证了效应存在」。
+    """
+    from wt901 import config
+
+    assert config.__file__ is not None
+    source = Path(config.__file__).read_text(encoding="utf-8")
+    start = source.index("DEFAULT_READ_RETRIES = 2")
+    end = source.index("DEFAULT_WRITE_DELAY", start)
+    block = source[start:end]
+
+    for forbidden in ("实测支持", "实测表明不需要", "不存在这个效应", "可以去掉重试"):
+        assert forbidden not in block, forbidden
+    assert "约束不等于否证" in block
+
 
 def test_default_read_retries_value_is_unchanged() -> None:
-    """本 scope 不改这个值——改它同样需要实测支撑，而实测还没做。"""
+    """实测没有给出改动它的依据——「测不出」不是「不需要」。
+
+    这条在 scope 1 与 scope 2 里都成立，但理由变了：scope 1 是「还没测」，
+    scope 2 是「测了，这个方法在这个量级上分辨不出来」。
+    """
     assert DEFAULT_READ_RETRIES == 2
     assert DEFAULT_READ_TIMEOUT == 0.5
 
@@ -311,3 +344,102 @@ def test_probe_take_address() -> None:
 
     assert take_address(["30", "--address", "ABC"]) == ("ABC", ["30"])
     assert take_address(["30"]) == (None, ["30"])
+
+
+# ---------------------------------------------------------------------------
+# RAY-313 scope 2 `read-retry-verdict` 的真机取证（2026-09-02）。
+#
+# 六次连接（2 台 × 各 3 次，正好是预注册的样本量）的归纳值，逐条抄自
+# ``ray-313/read-retry-verdict/acceptance/read_retry_probe.*.json``。
+# 钉住它的理由与 RAY-304 / RAY-310 相同：**已经付过代价的真机数据不该被改动后的
+# 判读再误判一次**。判据预注册于取证之前，这些测试守的是判据。
+#
+# 每相记 (failure_rate, timeouts, anomalous, errors, median_s)。
+# ---------------------------------------------------------------------------
+
+_HARDWARE_2026_09_02: dict[tuple[str, str, str], tuple[tuple[object, ...], ...]] = {
+    ("run1", "26F34505", "0x40"): ((0.0, 0, 0, 0, 0.060026), (0.0, 0, 0, 0, 0.060073), (0.0, 0, 0, 0, 0.060344)),
+    ("run1", "26F34505", "0x72"): ((0.0, 0, 0, 0, 0.060418), (0.0, 0, 0, 0, 0.060382), (0.0, 0, 0, 0, 0.060214)),
+    ("run2", "DDCD154C", "0x40"): ((0.0, 0, 0, 0, 0.060534), (0.0, 0, 0, 0, 0.059971), (0.0, 0, 0, 0, 0.061075)),
+    ("run2", "DDCD154C", "0x72"): ((0.0, 0, 0, 0, 0.059823), (0.0, 0, 0, 0, 0.060526), (0.0, 0, 0, 0, 0.060058)),
+    ("run3", "26F34505", "0x40"): ((0.0, 0, 0, 0, 0.060304), (0.0, 0, 0, 0, 0.059944), (0.0, 0, 0, 0, 0.059898)),
+    ("run3", "26F34505", "0x72"): ((0.0, 0, 0, 0, 0.060764), (0.0, 0, 0, 0, 0.06031), (0.0, 0, 0, 0, 0.060055)),
+    ("run4", "DDCD154C", "0x40"): ((0.0, 0, 0, 0, 0.059722), (0.0, 0, 0, 0, 0.059746), (0.0, 0, 0, 0, 0.060884)),
+    ("run4", "DDCD154C", "0x72"): ((0.0, 0, 0, 0, 0.060824), (0.0, 0, 0, 0, 0.060533), (0.0, 0, 0, 0, 0.060863)),
+    ("run5", "26F34505", "0x40"): ((0.0, 0, 0, 0, 0.060522), (0.0, 0, 0, 0, 0.060119), (0.0, 0, 0, 0, 0.060205)),
+    ("run5", "26F34505", "0x72"): ((0.0, 0, 0, 0, 0.059977), (0.0, 0, 0, 0, 0.059991), (0.0, 0, 0, 0, 0.059891)),
+    ("run6", "DDCD154C", "0x40"): ((0.0, 0, 0, 0, 0.059926), (0.0, 0, 0, 0, 0.059732), (0.0, 0, 0, 0, 0.060434)),
+    ("run6", "DDCD154C", "0x72"): ((0.0, 0, 0, 0, 0.060161), (0.0, 0, 0, 0, 0.059969), (0.0, 0, 0, 0, 0.060065)),
+}
+
+
+def _phase(values: tuple[object, ...]) -> dict[str, object]:
+    failure_rate, timeouts, anomalous, errors, median = values
+    return {
+        "failure_rate": failure_rate,
+        "timeouts": timeouts,
+        "anomalous": anomalous,
+        "errors": errors,
+        "median_s": median,
+        "p90_s": median,
+        "reads": 30,
+    }
+
+
+def test_hardware_sample_size_matches_the_preregistration() -> None:
+    """预注册要求 2 台设备 × 每台 3 次独立连接。"""
+    runs = {key[0] for key in _HARDWARE_2026_09_02}
+    devices: dict[str, set[str]] = {}
+    for run, device, _register in _HARDWARE_2026_09_02:
+        devices.setdefault(device, set()).add(run)
+    assert len(runs) == 6
+    assert len(devices) == 2
+    assert all(len(seen) == 3 for seen in devices.values())
+
+
+@pytest.mark.parametrize("key", sorted(_HARDWARE_2026_09_02))
+def test_every_hardware_run_reads_as_not_measurable(
+    key: tuple[str, str, str],
+) -> None:
+    """六次运行两个寄存器全部判为「测不出」，且没有一次触发作废闸。
+
+    这一条同时钉住**措辞**：判读必须说「测不出」，不能说「不存在」。差别在于
+    前者允许效应存在而本方法看不见，后者是一个这批数据支持不了的断言。
+    """
+    early, late, control = (
+        _phase(values) for values in _HARDWARE_2026_09_02[key]
+    )
+    verdict = judge(early, late, control)
+    assert verdict.startswith("测不出"), verdict
+    assert "不是「不存在」" in verdict
+    assert "作废" not in verdict
+
+
+def test_hardware_runs_had_zero_failures_of_any_kind() -> None:
+    """1080 次读零失败——零超时、零内容异常、零非超时错误。
+
+    零错误是「本次连接有效」的前提；零内容异常决定了处置是重试而非加校验的那条
+    分支根本没被触发。
+    """
+    total = 0
+    for phases in _HARDWARE_2026_09_02.values():
+        for failure_rate, timeouts, anomalous, errors, _median in phases:
+            assert failure_rate == 0.0
+            assert timeouts == 0 and anomalous == 0 and errors == 0
+            total += 30
+    assert total == 1080
+
+
+def test_hardware_latency_ratios_stayed_below_the_threshold() -> None:
+    """early ÷ late 的中位比全部远低于预注册的 1.5。
+
+    耗时被 BLE 连接间隔量化成 ~60 / ~90 ms 两档，1.5 倍恰好是「多跨一个间隔」；
+    实测比值落在 1.00 附近，即一个间隔都没多跨。
+    """
+    for phases in _HARDWARE_2026_09_02.values():
+        early_median = phases[0][4]
+        late_median = phases[1][4]
+        assert isinstance(early_median, float) and isinstance(late_median, float)
+        ratio = early_median / late_median
+        assert ratio < SIGNIFICANT_LATENCY_RATIO
+        assert 0.98 <= ratio <= 1.02, ratio
