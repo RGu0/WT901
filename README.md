@@ -117,8 +117,13 @@ from wt901 import scan, WT901Device, merge, ReturnRate, Bandwidth
 
 | 平台 | 连接期 RSSI |
 |---|---|
-| macOS | 可能可得（`bleak` 只在 CoreBluetooth 后端实现了它） |
+| macOS | **实测可得**（2026-09-01，60/60，−71..−33 dBm） |
 | Linux / Windows | **恒为 `None`** |
+
+macOS 那一行是真机实测的结果，判据取证前预注册，经过与局限见
+[`docs/protocol.md`](docs/protocol.md) §8.1。**要注意的局限**：实测确立的是「读得到、
+且随信号条件变化」，**不包括**「能在丢包之前预警」——那次采集里 `resync_count`
+全程为 0，没有可对照的事件。
 
 这不是本库偷懒：`bleak 0.22.3` 的 `BleakClient` 公开门面根本没有这个方法，
 `BaseBleakClient` 也没声明它，只有 CoreBluetooth 后端的实现类上有。细节与本库
