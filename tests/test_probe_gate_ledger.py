@@ -249,3 +249,63 @@ def test_reddening_after_the_filter_changes_nothing() -> None:
     # 残差约 0.4%，对照之下「红化在滤波之前」把同一个量从 0.27 抬到 0.97（约 250%）。
     # 两者差着两个数量级——这正是「加在之后等于什么都没做」的量化表述。
     assert abs(after - plain) / plain < 0.02
+
+
+# ----- 主判据的适用范围（RAY-330） ------------------------------------------
+
+
+def test_verdict_scope_limit_exists_and_is_the_confirmed_value() -> None:
+    """主判据只对标称 ≤42 Hz 的档位有判读能力。
+
+    红噪声重标定后真值 98 Hz 有一组读作 78.9 Hz，落进 `VERDICT_BAND`。RAY-330 的
+    处置是**限定适用范围**，不是改区间值——所以这两件事要一起钉住：范围常量存在，
+    且区间值没被顺手动过。
+    """
+    assert probe.VERDICT_SCOPE_MAX_HZ == 42.0
+    assert probe.VERDICT_BAND == (35.0, 80.0)
+
+
+def test_verdict_band_still_separates_the_in_scope_neighbours() -> None:
+    """限定范围不等于放弃判读：范围内的邻档仍必须被区间排除。
+
+    10 Hz 读作 10.3–13.5、20 Hz 读作 16.8–21.5，都在 35–80 之外。若哪天有人为了
+    「让测试变绿」去动区间下沿，这条会挂。
+    """
+    low, high = probe.VERDICT_BAND
+    for value in (10.3, 13.5, 16.8, 21.5):
+        assert not (low <= value <= high), f"{value} Hz 不该落进主判据区间"
+    # 42 Hz 的实测范围仍须全部落在区间内。
+    for value in (37.8, 46.7):
+        assert low <= value <= high
+
+
+def test_scope_limit_docstring_records_why_not_narrow_the_band() -> None:
+    """限定范围是个**判断**，理由必须写在常量上，而不是只写在 Issue 里。
+
+    钉三件事：成因（不是判据被削弱）、被否决的替代方案（收窄上沿）、以及它去了哪
+    （RAY-336）。少任何一件，读的人都会以为这个上限是拍脑袋定的。
+    """
+    doc = probe.__dict__["VERDICT_SCOPE_MAX_HZ"]  # 触发 NameError 而不是静默通过
+    assert doc == 42.0
+    source = _PROBE.read_text(encoding="utf-8")
+    marker = 'VERDICT_SCOPE_MAX_HZ = 42.0\n"""'
+    assert marker in source
+    body = source.split(marker, 1)[1].split('"""', 1)[0]
+    assert "满窗" in body, "要写明造成泄漏的那次下穿是满窗校验过的"
+    assert "方差" in body, "要写明成因是估计量在观测频段边缘的方差"
+    assert "RAY-336" in body, "要写明收窄上沿这条替代方案去了哪"
+
+
+def test_truncated_sustain_window_limitation_is_recorded() -> None:
+    """「持续」判据被截断时自己不报告——这条局限未修，但必须被写下来。
+
+    不写的话，96.9 Hz 那种只校验了名义窗口 19% 的结论，会和满窗校验的结论在读者
+    眼里等价。
+    """
+    source = _PROBE.read_text(encoding="utf-8")
+    assert "截断" in source
+    doc = (Path(__file__).resolve().parents[1] / "docs" / "protocol.md").read_text(
+        encoding="utf-8"
+    )
+    assert "VERDICT_SCOPE_MAX_HZ" in doc
+    assert "RAY-336" in doc
