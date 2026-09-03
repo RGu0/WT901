@@ -71,6 +71,52 @@ C# / Android SDK        按 ``0x72`` 分档（本库当前实现）      视 typ
 设备的 ``0x72`` 读数（**结论只对这一档成立，不得外推**）、采集地经纬度与日期、
 IGRF 参考值、完整点云、拟合的球心/半径/残差、以及设备离最近铁磁物体多远。
 脚本会把点云写成 JSON，直接进 evidence 目录。
+
+## 取证结果（2026-09-02）—— 上面的判定门槛一个字未改
+
+13 次采集、2 台 WT901BLE67、``0x72 = 6``、北京（IGRF 总强度 54.9717 µT，WMMHR-2025）。
+
+**没有定论。** 样本量无法达成，且**判定规则在这一档上本就给不出结果**（见下）。已确立：
+
+* **协议文档的 ×0.1 被排除** —— 13/13 次偏差 91–94%，跨 2 台设备、跨两种磁环境。
+* 点云确为球面的那台（``26F34505``）两次合格采集给出 **0.00636 / 0.00655 µT/count**，
+  与 SDK 的 ``1/150`` 差 4.7% / 1.7%，与 Python 的 ``/120`` 差 23.7% / 21.4%。
+  **数据指向 SDK，但按预注册规则不构成「判定成立」。**
+* 另一台（``DDCD154C``）的点云是轴长比 **1.50–1.54** 的椭球（7/7 次一致，跨两种磁
+  环境），球面拟合法对它**原理上不适用**——「球半径即真实场强」这个前提不成立。
+
+### ⚠ 判据缺陷：判定窗口落在候选值的外侧
+
+判定规则要求「唯一一个 ≤15% 且其余 >30%」，而 SDK 与 Python **只差 1.25 倍（25%）**：
+即使实测精确命中其中一个，另一个的偏差最多 20–25%，**够不到 30% 的排除线**。反解：
+
+===============  ==========  ==========================  ==================
+候选             数值        可判定成立的实测系数区间    相对本身
+===============  ==========  ==========================  ==================
+协议文档 ×0.1    0.100000    [0.085000, 0.115000]        −15% .. +15%
+SDK 1/150        0.006667    [0.005667, 0.005833]        **−15% .. −12.5%**
+Python /120      0.008333    [0.008667, 0.009583]        **+4% .. +15%**
+===============  ==========  ==========================  ==================
+
+后两个窗口都在候选值自己的外侧——**只有测量明显偏离目标值时才判得出来，测得越准越判不
+出来**。实测印证：全部合格的干净采集都判「不确定」，唯一一次「判定成立」出自受环境污染
+的采集。
+
+**根因是第 0 步那张可分性表只比了 SDK ÷ 协议文档，从未比过 SDK 与 Python。** 该表已改
+成两两都比，并按判定规则反推出所需的最小倍数（``1 + REJECT_TOLERANCE``）。**判定门槛
+本身未动。** 现在 type 6 会在采集之前就被拦下。
+
+### 两条采集规程的教训
+
+* **「远离笔记本」要给数量级。** 30 cm 处的笔记本使拟合半径偏移 **7–15%**——大于候选
+  之间的判定余量。≥2 m 时两台的半径都稳定（``26F34505`` 三次极差 3.1%）。它影响半径
+  （量级）但**不影响轴长比**（形状）。
+* **IGRF 必须来自 NOAA 计算器的 Total Field (F)**，不是磁偏角、不是水平强度、不是网上
+  搜到的近似值。本轮前 8 次用了错值（49.6 / 50.818，正确值 54.9717），足以把结论从
+  「不确定」翻成假的「分不开」。球半径与 F 无关，故错值可事后重算，但别指望总能这样。
+
+结论与局限记在 ``docs/protocol.md`` §5.7 与 §10，证据在
+``ray-312/mag-scale-verdict/acceptance/``。
 """
 
 from __future__ import annotations
@@ -268,19 +314,55 @@ def _sdk_coefficient(mag_type: int) -> float | None:
     return units.magnetic_field_to_ut(mag_type, 1)
 
 
+def _decidable_ratio() -> float:
+    """两个候选要能被判定规则分开，最少要相差多少倍。
+
+    判定规则是「唯一一个偏差 ≤ ``ACCEPT_TOLERANCE`` 且其余 > ``REJECT_TOLERANCE``」。
+    若实测精确命中候选 A，则候选 B 的相对偏差是 ``|A−B|/B``。要让它超过排除线，
+    需要 ``|A−B|/B > REJECT_TOLERANCE``，即两者相差超过 ``1 + REJECT_TOLERANCE`` 倍。
+
+    低于这个倍数时，**准确的测量反而判不出结果**——判定窗口落在候选值的外侧。
+    """
+    return 1.0 + REJECT_TOLERANCE
+
+
+def _pair_verdict(name_a: str, a: float, name_b: str, b: float) -> str:
+    ratio = max(a / b, b / a)
+    need = _decidable_ratio()
+    if ratio >= 2.0:
+        return f"  ✅ {name_a} vs {name_b}：差 {ratio:.2f} 倍，能分开"
+    if ratio >= need:
+        return f"  ⚠ {name_a} vs {name_b}：差 {ratio:.2f} 倍，勉强（拟合质量必须过关）"
+    return (
+        f"  ❌ {name_a} vs {name_b}：只差 {ratio:.2f} 倍 < {need:.2f}，"
+        "**判定规则在数学上分不开这两者**——即使测准也只会得到「不确定」"
+    )
+
+
 def _separability(mag_type: int) -> str:
+    """第 0 步：判定规则能不能分开这些候选。
+
+    **必须两两都比。** 此前这里只比了 SDK 与协议文档——RAY-312 的取证就栽在这上面：
+    type 6 的 SDK ÷ 协议文档是 15 倍，判「能分开」，于是方法被认为可行；但 SDK 与
+    Python 只差 1.25 倍，低于判定规则所需的 1.30 倍，**那一对在数学上永远判不出来**。
+    整轮取证做完才发现方法从一开始就不可能给出定论。
+    """
     sdk = _sdk_coefficient(mag_type)
     if sdk is None:
         return "该 type 不在本库已知分档内，SDK 那份对它没有说法"
-    ratio = max(sdk / DOC_COEFFICIENT, DOC_COEFFICIENT / sdk)
-    if ratio >= 2.0:
-        return f"能分开 SDK 与协议文档（差 {ratio:.1f} 倍）"
-    if ratio >= 1.4:
-        return f"勉强能分开（差 {ratio:.2f} 倍），拟合质量必须过关"
-    return (
-        f"⚠ 分不开（SDK 与协议文档只差 {ratio:.2f} 倍）。"
-        "本方法对这台设备无效，请走层次一（Windows + 维特上位机）"
+    lines = [
+        _pair_verdict("SDK", sdk, "协议文档", DOC_COEFFICIENT),
+        _pair_verdict("SDK", sdk, "Python 示例", PYTHON_COEFFICIENT),
+        _pair_verdict("协议文档", DOC_COEFFICIENT, "Python 示例", PYTHON_COEFFICIENT),
+    ]
+    blocked = [line for line in lines if line.lstrip().startswith("❌")]
+    header = (
+        "本方法能给出定论"
+        if not blocked
+        else f"⚠ **本方法给不出定论**（{len(blocked)} 对候选分不开），"
+        "结论最好也只能是「不确定」。要定论请走层次一（Windows + 维特上位机）"
     )
+    return header + "\n" + "\n".join(lines)
 
 
 def judge(measured: float, mag_type: int) -> tuple[str, list[tuple[str, float, float]]]:
