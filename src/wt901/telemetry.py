@@ -178,11 +178,57 @@ class Telemetry:
     def __init__(self, device: WT901Device) -> None:
         self._device = device
         self._mag_type: int | None = None
+        self._algorithm_mode: int | None = None
+        self._algorithm_probed = False
 
     @property
     def magnetic_field_type(self) -> int | None:
         """已缓存的磁场量纲类型（寄存器 ``0x72``），未读过时为 ``None``。"""
         return self._mag_type
+
+    @property
+    def algorithm_mode(self) -> int | None:
+        """已缓存的姿态解算算法（寄存器 ``0x24``），未读过时为 ``None``。
+
+        **这个缓存与 **:attr:`magnetic_field_type` **的缓存不是一回事。** 量纲
+        类型是硬件配置，运行中不会变，读一次就够；算法模式是**配置**，
+        :meth:`~wt901.config.RegisterAccess.set_algorithm` 随时能改它。所以取值
+        时**写入优先**：本库在这条连接上写过 ``0x24`` 的话，以写入值为准，
+        这个缓存只在从没写过时才被用到，且**只探一次**——理由见
+        :meth:`_current_algorithm_mode`。
+        """
+        return self._algorithm_mode
+
+    async def _current_algorithm_mode(self) -> int | None:
+        """取当前的 ``0x24``；取不到时返回 ``None`` 而不是抛异常。
+
+        **写入优先，其次缓存，最后才去读一次。** ``applied_writes`` 里的值是权威
+        的——它已经是重连后配置重放的依据，与设备状态同步。
+
+        **只探一次，成败都不再重试。** ``0x24`` 不在官方寄存器地址表里（RAY-309
+        的溯源表），某些固件上可能根本不应答；每次调用都重试一遍会让每次磁场读取
+        白等一整轮读超时（默认 ``0.5 s × 3``），而这条链路是与 ``0x61`` 实时流共
+        用的。探测失败后新鲜度按**未知**处理——那是安全的方向
+        （:attr:`~wt901.models.MagneticField.may_be_stale` 为 ``True``），且一次
+        :meth:`~wt901.config.RegisterAccess.set_algorithm` 就能让它重新变为已知，
+        因为写入优先于这个缓存。
+
+        ⚠ **本库之外改的算法模式看不见**（例如维特上位机改了它）。那种情况下这里
+        给出的是过时的值，而它决定 ``may_be_stale``。已知局限，记在
+        ``docs/protocol.md`` §5.7。
+        """
+        for entry in self._device.registers.applied_writes:
+            if entry.register == Register.ALGORITHM:
+                return _u16(entry.value)
+        if not self._algorithm_probed:
+            self._algorithm_probed = True
+            try:
+                self._algorithm_mode = _u16(
+                    await self._device.registers.read_value(Register.ALGORITHM)
+                )
+            except WT901Error as exc:
+                _LOGGER.debug("读 0x24 失败，磁场读数的新鲜度按未知处理：%s", exc)
+        return self._algorithm_mode
 
     async def read_magnetic_field(self) -> MagneticField:
         """读磁场三轴。
@@ -193,9 +239,22 @@ class Telemetry:
         量纲类型不在已知分档内时 :attr:`MagneticField.value` 为 ``None``，只有
         ``raw`` 可用。官方 Android SDK 在这种情况下原样返回未换算的计数值，
         那会让调用方拿到一个单位不明却看着正常的数。
+
+        **同时取寄存器 ``0x24``（姿态解算算法），因为它决定这次读数可不可信。**
+        6 轴模式下设备不采样磁力计，``0x3A``–``0x3C`` 停在一个可能任意陈旧的值上
+        （RAY-344，两台设备实测）。结果记进
+        :attr:`MagneticField.algorithm_mode`，判据是
+        :attr:`MagneticField.may_be_stale`。
+
+        **那个判据与 ``value`` 是否为 ``None`` 互相独立**：换算得出来不代表值是新的。
+
+        ``0x24`` 与量纲类型一样只读一次并缓存，**不会给每次调用增加一次寄存器读**
+        （那会与 ``0x61`` 实时流抢链路）。但它是配置而非硬件属性，所以取值时
+        写入优先，细节见 :meth:`_current_algorithm_mode`。
         """
         if self._mag_type is None:
             self._mag_type = _u16(await self._device.registers.read_value(Register.MAGTYPE))
+        algorithm_mode = await self._current_algorithm_mode()
 
         response = await self._device.registers.read(Register.HX)
         raw = response.values[:3]
@@ -204,7 +263,12 @@ class Telemetry:
         value: Vec3 | None = None
         if all(component is not None for component in converted):
             value = Vec3(*(component for component in converted if component is not None))
-        return MagneticField(value=value, mag_type=self._mag_type, raw=tuple(raw))
+        return MagneticField(
+            value=value,
+            mag_type=self._mag_type,
+            raw=tuple(raw),
+            algorithm_mode=algorithm_mode,
+        )
 
     async def read_quaternion(self) -> Quaternion:
         """读姿态四元数。Q0–Q3 是回帧的前 4 个寄存器。
@@ -418,10 +482,17 @@ class TelemetryPoller:
 
     **不可信的读数照常写进属性，可信与否随值一起走。** 寄存器那四项每一项的类型
     都自带判据——:attr:`Battery.is_plausible`、
-    :attr:`~wt901.models.MagneticField.value` 为 ``None``、
-    :attr:`~wt901.models.Quaternion.is_plausible`——所以这里不需要额外的过滤或
-    计数。轮询器不做「保持上一次的有效值」这类事：那会让一个陈旧的值冒充当前
-    状态，比给出一个自带「不可信」标志的新值更难查。
+    :attr:`~wt901.models.Quaternion.is_plausible`，而磁场**有两个且互相独立**：
+    :attr:`~wt901.models.MagneticField.value` 为 ``None``（量纲类型未知，换算不
+    出来）与 :attr:`~wt901.models.MagneticField.may_be_stale`（6 轴模式下磁力计
+    没在采样，数值可能任意陈旧）。**换算得出来不代表值是新的**，两个都要看。
+    所以这里不需要额外的过滤或计数。
+
+    轮询器不做「保持上一次的有效值」这类事：那会让一个陈旧的值冒充当前状态，比
+    给出一个自带「不可信」标志的新值更难查。**但要注意本层做不到的那一半**：
+    :attr:`magnetic_field` 在 6 轴下每个周期都会被写进一个**新的对象**，而那个
+    对象里的 ``raw`` 可能自上电起就没变过。轮询器只保证「这是刚读回来的」，
+    保证不了「这是刚测出来的」——后者只有 ``may_be_stale`` 说了算。
 
     **读取失败时的处置分两种，别记混：**
 
@@ -442,6 +513,9 @@ class TelemetryPoller:
         self._tasks: list[asyncio.Task[None]] = []
 
         self.magnetic_field: MagneticField | None = None
+        """最近一次读到的磁场。**用之前先看
+        :attr:`~wt901.models.MagneticField.may_be_stale`**——6 轴模式下这里会
+        每个周期都刷新成一个新对象，而里面的数值可能任意陈旧（RAY-344）。"""
         self.quaternion: Quaternion | None = None
         """最近一次读到的四元数。**用之前先看
         :attr:`~wt901.models.Quaternion.is_plausible`**——全零回读会写进这里。"""

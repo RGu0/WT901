@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from wt901.protocol import units
 from wt901.protocol.frames import Frame, decode_data_frame
+from wt901.protocol.registers import AlgorithmMode
 
 __all__ = [
     "DeviceInfo",
@@ -133,19 +134,60 @@ class Quaternion:
 class MagneticField:
     """磁场三轴。
 
-    ``value`` 为 ``None`` 表示寄存器 ``0x72`` 报告的量纲类型不在已知分档内，
-    本库拒绝猜测系数。此时只有 ``raw`` 可用，且单位未知。
+    **有两处独立的不可信来源，别混为一谈**——一个关于单位，一个关于新鲜度：
+
+    ===========================  ==========================================
+    信号                         含义
+    ===========================  ==========================================
+    ``value is None``            寄存器 ``0x72`` 报告的量纲类型不在已知分档
+                                 内，换算系数无从取得。只有 ``raw`` 可用，
+                                 且单位未知。
+    :attr:`may_be_stale`         设备当时不在 9 轴模式，磁力计**没有在采样**，
+                                 ``raw`` 可能是一个任意陈旧的值。单位没问题，
+                                 数值本身不可信。
+    ===========================  ==========================================
+
+    两者可以同时成立，也可以都不成立。`value` 不是 ``None`` **不代表**数值新鲜。
     """
 
     value: Vec3 | None
-    """单位 µT；量纲类型未知时为 ``None``。"""
+    """单位 µT；量纲类型未知时为 ``None``。
+
+    **它只表示"换算得出来"，不表示"值是新的"。** 新鲜度看 :attr:`may_be_stale`。
+    """
     mag_type: int
     raw: tuple[int, ...]
+    algorithm_mode: int | None = None
+    """读数产生时设备的姿态解算算法（寄存器 ``0x24``），未取到时为 ``None``。
+
+    ``0`` 是 9 轴、``1`` 是 6 轴（编码与直觉相反，见
+    :class:`~wt901.protocol.registers.AlgorithmMode`）。记进读数里而不是只放在
+    别处，是因为**它决定这次读数可不可信**，而调用方拿到的是这个对象。
+    """
 
     @property
     def is_calibrated_unit(self) -> bool:
-        """读数是否带确定单位。"""
+        """读数是否带确定单位。**与新鲜度无关**，见 :attr:`may_be_stale`。"""
         return self.value is not None
+
+    @property
+    def may_be_stale(self) -> bool:
+        """这个读数是否**可能任意陈旧**。
+
+        真机实测（RAY-344，两台 WT901BLE67）：``0x24 = 1``（6 轴）时设备不采样
+        磁力计，``0x3A``–``0x3C`` 停在一个固定值上不再更新——转动设备、开着实时
+        流、跨连接会话都不变。切到 9 轴后恢复更新，切回 6 轴又停住。
+
+        **"可能"两个字是认真的，不是保守措辞。** 6 轴下那个值已被实测确认能跨越
+        十几个小时、一整段 9 轴运行和多次断连重连后原样回来——它不是"磁力计停工
+        前的最后一个样本"，而是某种被持久保存又恢复的状态。所以陈旧的时间尺度
+        **没有已知上界**，别按"大概几秒前"来用。
+
+        :attr:`algorithm_mode` 为 ``None``（没取到）时**也返回 ``True``**：那种
+        情况下本库无法排除陈旧，按本库一贯的规矩，拿不准就不声称它是新鲜的。
+        要区分"确知陈旧"与"不知道"，看 :attr:`algorithm_mode` 本身。
+        """
+        return self.algorithm_mode != AlgorithmMode.NINE_AXIS
 
 
 @dataclass(frozen=True, slots=True)
