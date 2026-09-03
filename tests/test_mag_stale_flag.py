@@ -179,8 +179,8 @@ async def test_written_algorithm_mode_wins_over_the_cached_read() -> None:
     second = await _run(transport, table, device.telemetry.read_magnetic_field())
     assert second.algorithm_mode == NINE
     assert second.may_be_stale is False
-    # 缓存本身没被改写，只是让位——写入才是权威
-    assert device.telemetry.algorithm_mode == SIX
+    # 公开属性必须与判定取同一个值——只读缓存的属性会在这里给出矛盾的答案
+    assert device.telemetry.algorithm_mode == NINE
     await device.close()
 
 

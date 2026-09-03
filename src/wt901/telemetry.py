@@ -178,7 +178,7 @@ class Telemetry:
     def __init__(self, device: WT901Device) -> None:
         self._device = device
         self._mag_type: int | None = None
-        self._algorithm_mode: int | None = None
+        self._probed_algorithm_mode: int | None = None
         self._algorithm_probed = False
 
     @property
@@ -188,47 +188,55 @@ class Telemetry:
 
     @property
     def algorithm_mode(self) -> int | None:
-        """已缓存的姿态解算算法（寄存器 ``0x24``），未读过时为 ``None``。
+        """当前已知的姿态解算算法（寄存器 ``0x24``），不知道时为 ``None``。
 
-        **这个缓存与 **:attr:`magnetic_field_type` **的缓存不是一回事。** 量纲
-        类型是硬件配置，运行中不会变，读一次就够；算法模式是**配置**，
-        :meth:`~wt901.config.RegisterAccess.set_algorithm` 随时能改它。所以取值
-        时**写入优先**：本库在这条连接上写过 ``0x24`` 的话，以写入值为准，
-        这个缓存只在从没写过时才被用到，且**只探一次**——理由见
-        :meth:`_current_algorithm_mode`。
-        """
-        return self._algorithm_mode
+        **这与 **:attr:`magnetic_field_type` **不是同一种缓存。** 量纲类型是硬件
+        配置、运行中不会变，读一次就够；算法模式是**配置**，
+        :meth:`~wt901.config.RegisterAccess.set_algorithm` 随时能改它。
 
-    async def _current_algorithm_mode(self) -> int | None:
-        """取当前的 ``0x24``；取不到时返回 ``None`` 而不是抛异常。
+        所以这里**写入优先**：本库在这条连接上写过 ``0x24`` 的话就以写入值为准
+        （``applied_writes`` 已经是重连后配置重放的依据，与设备状态同步），只在
+        从没写过时才用读回来的那个值。**本属性与 **
+        :attr:`~wt901.models.MagneticField.may_be_stale` **取的是同一个值**——
+        一个只读缓存的属性会在调用方切过模式之后给出与判定相矛盾的答案。
 
-        **写入优先，其次缓存，最后才去读一次。** ``applied_writes`` 里的值是权威
-        的——它已经是重连后配置重放的依据，与设备状态同步。
-
-        **只探一次，成败都不再重试。** ``0x24`` 不在官方寄存器地址表里（RAY-309
-        的溯源表），某些固件上可能根本不应答；每次调用都重试一遍会让每次磁场读取
-        白等一整轮读超时（默认 ``0.5 s × 3``），而这条链路是与 ``0x61`` 实时流共
-        用的。探测失败后新鲜度按**未知**处理——那是安全的方向
-        （:attr:`~wt901.models.MagneticField.may_be_stale` 为 ``True``），且一次
-        :meth:`~wt901.config.RegisterAccess.set_algorithm` 就能让它重新变为已知，
-        因为写入优先于这个缓存。
-
-        ⚠ **本库之外改的算法模式看不见**（例如维特上位机改了它）。那种情况下这里
-        给出的是过时的值，而它决定 ``may_be_stale``。已知局限，记在
-        ``docs/protocol.md`` §5.7。
+        读回来的那个值**只探一次**，理由见 :meth:`_current_algorithm_mode`。
         """
         for entry in self._device.registers.applied_writes:
             if entry.register == Register.ALGORITHM:
                 return _u16(entry.value)
+        return self._probed_algorithm_mode
+
+    async def _current_algorithm_mode(self) -> int | None:
+        """取当前的 ``0x24``；取不到时返回 ``None`` 而不是抛异常。
+
+        **已知就直接用，否则只探一次。** ``0x24`` 不在官方寄存器地址表里
+        （RAY-309 的溯源表），某些固件上可能根本不应答；每次调用都重试一遍会让
+        每次磁场读取白等一整轮读超时（默认 ``0.5 s × 3``），而这条链路是与
+        ``0x61`` 实时流共用的。
+
+        探测失败后新鲜度按**未知**处理——那是安全的方向
+        （:attr:`~wt901.models.MagneticField.may_be_stale` 为 ``True``），且一次
+        :meth:`~wt901.config.RegisterAccess.set_algorithm` 就能让它重新变为已知，
+        因为写入优先于探测结果。
+
+        ⚠ **本库之外改的算法模式看不见**（例如维特上位机改了它）。那种情况下这里
+        给出的是过时的值，而它决定 ``may_be_stale``。已知局限，记在
+        ``docs/protocol.md`` §5.7.1。
+        """
+        known = self.algorithm_mode
+        if known is not None:
+            return known
         if not self._algorithm_probed:
-            self._algorithm_probed = True
             try:
-                self._algorithm_mode = _u16(
+                self._probed_algorithm_mode = _u16(
                     await self._device.registers.read_value(Register.ALGORITHM)
                 )
             except WT901Error as exc:
                 _LOGGER.debug("读 0x24 失败，磁场读数的新鲜度按未知处理：%s", exc)
-        return self._algorithm_mode
+            # 只有走完 try/except 才算探过——被取消打断不该让新鲜度永久变成未知。
+            self._algorithm_probed = True
+        return self.algorithm_mode
 
     async def read_magnetic_field(self) -> MagneticField:
         """读磁场三轴。
