@@ -245,3 +245,20 @@ def test_poller_magnetic_field_attribute_is_documented() -> None:
     following = source[marker : marker + 400]
     assert "may_be_stale" in following
     assert "任意陈旧" in following
+
+
+def test_may_be_stale_docstring_records_the_power_cycle_finding() -> None:
+    """``may_be_stale`` 的 docstring 必须写明那个值**跨断电存活**（RAY-344 scope 2）。
+
+    这不是措辞洁癖：调用方看到「可能陈旧」时会去猜一个量级，而「几秒」和「上一次处于
+    9 轴是什么时候」是完全不同的两回事。前一版写的是「没有已知上界」——那是**没测过**，
+    现在测过了，说法要跟着变准。
+
+    同时挡住反向改写：断电能清掉那个值这句话，实测不支持。
+    """
+    doc = MagneticField.may_be_stale.__doc__
+    assert doc is not None
+    assert "跨断电存活" in doc
+    assert "非易失存储" in doc
+    for forbidden in ("重启后会清", "断电即失效", "没有已知上界"):
+        assert forbidden not in doc, forbidden
